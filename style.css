@@ -441,6 +441,22 @@ input:focus, select:focus {
 /* Selects */
 select { cursor: pointer; }
 
+/* Scrollable table wrapper */
+.card-section { overflow-x: auto; }
+
+/* Sticky delete column */
+.spreadsheet th:last-child,
+.spreadsheet td:last-child {
+  position: sticky;
+  right: 0;
+  background: white;
+  box-shadow: -2px 0 4px rgba(0,0,0,0.06);
+  text-align: center;
+  min-width: 60px;
+}
+.spreadsheet .new-row td:last-child { background: #f0f9ff; }
+.spreadsheet .refund-row td:last-child { background: #fff9f9; }
+
 /* Spreadsheet inline editing */
 .spreadsheet .ss-input {
   width: 100%;
