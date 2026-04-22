@@ -11,7 +11,7 @@
 <!-- Lock Screen -->
 <div id="lock-screen">
   <div class="lock-box">
-    <div class="lock-logo">🔒</div>
+    <div class="lock-logo"><img src="logo.svg" width="48" height="48" alt="Springs"></div>
     <h2>Springs Payroll</h2>
 
     <!-- Setup (first time) -->
@@ -35,7 +35,10 @@
 
 <div id="app" class="hidden">
   <header>
-    <h1>Springs Payroll</h1>
+    <div class="header-logo">
+      <img src="logo.svg" width="32" height="32" alt="Springs">
+      <h1>Springs Payroll</h1>
+    </div>
     <nav>
       <button class="tab-btn active" data-tab="contractors">Contractors</button>
       <button class="tab-btn" data-tab="entry">Payroll Entry</button>
@@ -56,16 +59,24 @@
     <div class="toolbar">
       <h2>Contractors</h2>
       <div class="toolbar-actions">
+        <span class="sort-label">Sort:</span>
+        <button id="sort-by-name" class="btn-sort active" onclick="sortContractors('name')">Name</button>
+        <button id="sort-by-type" class="btn-sort" onclick="sortContractors('type')">Type</button>
+        <div class="toolbar-divider"></div>
         <button class="btn-sm" onclick="downloadContractorsTemplate()">Template</button>
         <label class="btn-sm" style="cursor:pointer">Import CSV
           <input type="file" accept=".csv" style="display:none" onchange="importContractors(event)">
         </label>
+        <button id="btn-bulk-delete" class="btn-sm btn-danger hidden" onclick="deleteSelectedContractors()">Delete Selected</button>
         <button id="btn-add-contractor" class="btn-primary">+ Add Contractor</button>
       </div>
     </div>
     <table class="data-table">
       <thead>
-        <tr><th>Name</th><th>Type</th><th></th></tr>
+        <tr>
+          <th style="width:36px"><input type="checkbox" id="select-all-contractors" onchange="toggleSelectAll(this.checked)"></th>
+          <th>Name</th><th>Type</th><th></th>
+        </tr>
       </thead>
       <tbody id="contractors-tbody"></tbody>
     </table>

@@ -438,6 +438,47 @@ function importRefunds(event) {
   reader.readAsText(file);
 }
 
+// ========== CONTRACTOR SORT / BULK DELETE ==========
+let contractorSort = { by: 'name', dir: 'asc' };
+
+function sortContractors(by) {
+  if (contractorSort.by === by) {
+    contractorSort.dir = contractorSort.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    contractorSort.by = by; contractorSort.dir = 'asc';
+  }
+  renderContractors();
+}
+
+function toggleSelectAll(checked) {
+  document.querySelectorAll('.contractor-cb').forEach(cb => cb.checked = checked);
+  updateBulkDeleteBtn();
+}
+
+function updateBulkDeleteBtn() {
+  const n = document.querySelectorAll('.contractor-cb:checked').length;
+  const btn = document.getElementById('btn-bulk-delete');
+  if (!btn) return;
+  if (n > 0) { btn.textContent = `Delete Selected (${n})`; btn.classList.remove('hidden'); }
+  else { btn.classList.add('hidden'); }
+  // uncheck select-all if not all selected
+  const total = document.querySelectorAll('.contractor-cb').length;
+  const selAll = document.getElementById('select-all-contractors');
+  if (selAll) selAll.checked = n > 0 && n === total;
+}
+
+function deleteSelectedContractors() {
+  const ids = [...document.querySelectorAll('.contractor-cb:checked')].map(cb => cb.dataset.id);
+  if (!ids.length) return;
+  if (!confirm(`Delete ${ids.length} contractor(s)? This will unlink them from all transactions and refunds.`)) return;
+  ids.forEach(id => {
+    db.contractors = db.contractors.filter(c => c.id !== id);
+    db.transactions.forEach(t => { if (t.closerId === id) t.closerId = null; if (t.setterId === id) t.setterId = null; });
+    db.refunds.forEach(r => { if (r.closerId === id) r.closerId = null; if (r.setterId === id) r.setterId = null; });
+  });
+  saveDB(); renderContractors();
+}
+
 // ========== IMPORT: CONTRACTORS ==========
 function downloadContractorsTemplate() {
   downloadCSV('Name,Type\nJohn Smith,closer\nJane Doe,setter\nAlex Rivera,both\n', 'springs-contractors-template.csv');
@@ -469,17 +510,38 @@ function importContractors(event) {
 
 // ========== RENDER CONTRACTORS ==========
 function renderContractors() {
+  ['name', 'type'].forEach(by => {
+    const btn = document.getElementById(`sort-by-${by}`);
+    if (!btn) return;
+    const isActive = contractorSort.by === by;
+    btn.classList.toggle('active', isActive);
+    btn.textContent = by.charAt(0).toUpperCase() + by.slice(1) + (isActive ? (contractorSort.dir === 'asc' ? ' ▲' : ' ▼') : '');
+  });
+
   const tbody = document.getElementById('contractors-tbody');
   if (!db.contractors.length) {
-    tbody.innerHTML = '<tr><td colspan="3" style="padding:20px;text-align:center;color:#9ca3af">No contractors yet. Click "+ Add Contractor" to get started.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="4" style="padding:20px;text-align:center;color:#9ca3af">No contractors yet. Click "+ Add Contractor" to get started.</td></tr>';
     return;
   }
-  tbody.innerHTML = db.contractors.map(c => `
-    <tr>
-      <td>${c.name}</td>
-      <td><span class="badge ${c.type}">${c.type}</span></td>
-      <td><button class="btn-sm btn-danger" onclick="deleteContractor('${c.id}')">Delete</button></td>
-    </tr>`).join('');
+
+  const sorted = [...db.contractors].sort((a, b) => {
+    const av = (a[contractorSort.by] || '').toLowerCase();
+    const bv = (b[contractorSort.by] || '').toLowerCase();
+    return contractorSort.dir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+  });
+
+  tbody.innerHTML = sorted.map(c => {
+    const typeBadge = c.type === 'both'
+      ? '<span class="badge closer" style="font-size:10px">closer</span> <span class="badge setter" style="font-size:10px">setter</span>'
+      : `<span class="badge ${c.type}">${c.type}</span>`;
+    return `
+      <tr>
+        <td><input type="checkbox" class="contractor-cb" data-id="${c.id}" onchange="updateBulkDeleteBtn()"></td>
+        <td>${c.name}</td>
+        <td>${typeBadge}</td>
+        <td><button class="btn-sm btn-danger" onclick="deleteContractor('${c.id}')">Delete</button></td>
+      </tr>`;
+  }).join('');
 }
 
 // ========== RENDER ENTRY ==========
@@ -637,6 +699,70 @@ function renderRefundsSection() {
 }
 
 // ========== RENDER SUMMARY ==========
+function renderSummaryDashboard(month, year) {
+  let totNetCash = 0, totComm = 0, totRefund = 0, totBonus = 0, totPay = 0;
+
+  const rows = db.contractors.map(c => {
+    const comm = calcCommission(c, month, year);
+    const refundEntries = getRefundDeductionsForMonth(c, month, year);
+    const bonuses = calcBonuses(c, month, year);
+    const totalRefund = refundEntries.reduce((s, e) => s + e.amount, 0);
+    const totalBonus = bonuses.totalWeeklyBonus + bonuses.monthlyBonus;
+    const totalPay = comm.total + totalRefund + totalBonus;
+
+    const all = getTransactionsForMonth(month, year);
+    const seen = new Set();
+    all.forEach(t => { if (t.closerId === c.id || t.setterId === c.id) seen.add(t.id); });
+    const netCash = all.filter(t => seen.has(t.id)).reduce((s, t) => s + (t.amountPaid || 0), 0);
+
+    totNetCash += netCash; totComm += comm.total; totRefund += totalRefund;
+    totBonus += totalBonus; totPay += totalPay;
+
+    const typeBadge = c.type === 'both'
+      ? '<span class="badge closer" style="font-size:10px">C</span>&thinsp;<span class="badge setter" style="font-size:10px">S</span>'
+      : `<span class="badge ${c.type}">${c.type}</span>`;
+
+    return `
+      <tr>
+        <td><strong>${c.name}</strong></td>
+        <td>${typeBadge}</td>
+        <td>${fmt(netCash)}</td>
+        <td class="text-green">${fmt(comm.total)}</td>
+        <td class="${totalRefund < 0 ? 'text-red' : totalRefund > 0 ? 'text-green' : ''}">${fmt(totalRefund)}</td>
+        <td>${fmt(totalBonus)}</td>
+        <td class="dash-total">${fmt(totalPay)}</td>
+      </tr>`;
+  }).join('');
+
+  return `
+    <div class="dashboard-card">
+      <div class="card-header" style="padding:14px 20px">
+        <h3>Overview — ${MONTHS[month-1]} ${year}</h3>
+        <span style="font-size:12px;color:#6b7280">${db.contractors.length} contractor(s)</span>
+      </div>
+      <table class="data-table dashboard-table">
+        <thead>
+          <tr>
+            <th>Contractor</th><th>Type</th>
+            <th>Cash Collected</th><th>Commission</th>
+            <th>Refund Impact</th><th>Bonuses</th><th>Total Pay</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows}
+          <tr class="dash-totals-row">
+            <td colspan="2"><strong>TOTALS</strong></td>
+            <td>${fmt(totNetCash)}</td>
+            <td class="text-green">${fmt(totComm)}</td>
+            <td class="${totRefund < 0 ? 'text-red' : ''}">${fmt(totRefund)}</td>
+            <td>${fmt(totBonus)}</td>
+            <td class="dash-total">${fmt(totPay)}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>`;
+}
+
 function renderSummary() {
   const month = parseInt(document.getElementById('summary-month').value);
   const year = parseInt(document.getElementById('summary-year').value);
@@ -644,7 +770,8 @@ function renderSummary() {
 
   if (!db.contractors.length) { body.innerHTML = '<p class="empty-msg">No contractors found.</p>'; return; }
 
-  body.innerHTML = db.contractors.map(c => {
+  const dashboard = renderSummaryDashboard(month, year);
+  const cards = db.contractors.map(c => {
     const comm = calcCommission(c, month, year);
     const refundEntries = getRefundDeductionsForMonth(c, month, year);
     const bonuses = calcBonuses(c, month, year);
@@ -746,6 +873,8 @@ function renderSummary() {
         </div>
       </div>`;
   }).join('');
+
+  body.innerHTML = dashboard + cards;
 }
 
 // ========== CRUD ==========
