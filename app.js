@@ -11,25 +11,21 @@ async function hashPassword(password) {
   const hash = await crypto.subtle.digest('SHA-256', buf);
   return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
-
 function showLockPanel(panel) {
   document.getElementById('lock-setup').classList.add('hidden');
   document.getElementById('lock-login').classList.add('hidden');
   document.getElementById(panel).classList.remove('hidden');
 }
-
 function showLockError(elId, msg) {
   const el = document.getElementById(elId);
   el.textContent = msg;
   el.classList.remove('hidden');
   setTimeout(() => el.classList.add('hidden'), 3000);
 }
-
 function hideLockScreen() {
   document.getElementById('lock-screen').classList.add('hidden');
   document.getElementById('app').classList.remove('hidden');
 }
-
 function lockApp() {
   sessionStorage.removeItem('springs-unlocked');
   document.getElementById('app').classList.add('hidden');
@@ -37,7 +33,6 @@ function lockApp() {
   document.getElementById('login-password').value = '';
   showLockPanel('lock-login');
 }
-
 async function setupPassword() {
   const password = document.getElementById('setup-password').value;
   const confirm = document.getElementById('setup-confirm').value;
@@ -48,7 +43,6 @@ async function setupPassword() {
   sessionStorage.setItem('springs-unlocked', '1');
   hideLockScreen();
 }
-
 async function verifyPassword() {
   const password = document.getElementById('login-password').value;
   const hash = await hashPassword(password);
@@ -60,32 +54,43 @@ async function verifyPassword() {
     document.getElementById('login-password').value = '';
   }
 }
-
 function checkAuth() {
   if (sessionStorage.getItem('springs-unlocked')) { hideLockScreen(); return; }
-  const hasPassword = !!localStorage.getItem(PASS_KEY);
-  showLockPanel(hasPassword ? 'lock-login' : 'lock-setup');
+  showLockPanel(localStorage.getItem(PASS_KEY) ? 'lock-login' : 'lock-setup');
 }
-
-// Allow Enter key on password fields
 document.addEventListener('keydown', e => {
   if (e.key !== 'Enter') return;
-  if (document.getElementById('lock-login') && !document.getElementById('lock-login').classList.contains('hidden')) verifyPassword();
-  if (document.getElementById('lock-setup') && !document.getElementById('lock-setup').classList.contains('hidden')) setupPassword();
+  if (!document.getElementById('lock-login').classList.contains('hidden')) verifyPassword();
+  if (!document.getElementById('lock-setup').classList.contains('hidden')) setupPassword();
 });
 
-// ========== EXPORT / IMPORT ==========
+// ========== DATA ==========
+let db = { contractors: [], transactions: [], refunds: [], weekendContracts: [] };
+
+function loadDB() {
+  const saved = localStorage.getItem('springs-payroll');
+  if (!saved) return;
+  const p = JSON.parse(saved);
+  db = {
+    contractors: p.contractors || [],
+    transactions: p.transactions || p.payments || [],
+    refunds: p.refunds || [],
+    weekendContracts: p.weekendContracts || []
+  };
+}
+function saveDB() { localStorage.setItem('springs-payroll', JSON.stringify(db)); }
+function genId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+
+// ========== BACKUP EXPORT / IMPORT ==========
 function exportData() {
-  const date = new Date().toISOString().slice(0, 10);
   const blob = new Blob([JSON.stringify(db, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `springs-payroll-backup-${date}.json`;
+  a.download = `springs-payroll-backup-${new Date().toISOString().slice(0,10)}.json`;
   a.click();
   URL.revokeObjectURL(url);
 }
-
 function importData(event) {
   const file = event.target.files[0];
   if (!file) return;
@@ -93,468 +98,155 @@ function importData(event) {
   reader.onload = e => {
     try {
       const imported = JSON.parse(e.target.result);
-      if (!imported.contractors || !imported.payments || !imported.refunds) {
-        alert('Invalid backup file. Please use a file exported from Springs Payroll.');
-        return;
-      }
-      if (confirm(`This will replace all current data with the backup from ${file.name}. Continue?`)) {
-        db = imported;
-        saveDB();
-        renderContractors();
-        renderEntry();
+      if (!imported.contractors) { alert('Invalid backup file.'); return; }
+      if (confirm(`Replace all data with backup from ${file.name}?`)) {
+        db = { contractors: imported.contractors || [], transactions: imported.transactions || imported.payments || [], refunds: imported.refunds || [], weekendContracts: imported.weekendContracts || [] };
+        saveDB(); renderContractors(); renderEntry();
         alert('Data imported successfully!');
       }
-    } catch {
-      alert('Could not read the file. Make sure it is a valid Springs Payroll backup.');
-    }
+    } catch { alert('Could not read the file.'); }
     event.target.value = '';
   };
   reader.readAsText(file);
-}
-
-// ========== DATA LAYER ==========
-let db = { contractors: [], payments: [], refunds: [] };
-
-function loadDB() {
-  const saved = localStorage.getItem('springs-payroll');
-  if (saved) db = JSON.parse(saved);
-}
-
-function saveDB() {
-  localStorage.setItem('springs-payroll', JSON.stringify(db));
-}
-
-function genId() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 }
 
 // ========== HELPERS ==========
 function fmt(n) {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(n || 0);
 }
-
-function isQualified(payment) {
-  if ('depositThresholdMet' in payment) return !!payment.depositThresholdMet;
-  if (!payment.contractValue || payment.contractValue <= 0) return false;
-  return (payment.depositAmount / payment.contractValue) >= 0.25;
+function parseDate(str) {
+  if (!str) return null;
+  const d = new Date(str + (str.includes('T') ? '' : 'T00:00:00'));
+  return isNaN(d) ? null : d;
 }
-
-function getCommissionableAmount(payment) {
-  if (payment.commissionableAmount !== undefined) return Math.max(0, payment.commissionableAmount);
-  return isQualified(payment) ? (payment.cashCollected || 0) : 0;
+function toISODate(str) {
+  if (!str) return '';
+  const d = new Date(str);
+  return isNaN(d) ? str : d.toISOString().slice(0, 10);
 }
-
-function getDepositPct(payment) {
-  if ('depositThresholdMet' in payment) return payment.depositThresholdMet ? 25 : 0;
-  if (!payment.contractValue || payment.contractValue <= 0) return 0;
-  return (payment.depositAmount / payment.contractValue) * 100;
+function findContractorByName(name) {
+  if (!name || ['n/a', 'na', ''].includes(name.toLowerCase().trim())) return null;
+  const lower = name.toLowerCase().trim();
+  return db.contractors.find(c => c.name.toLowerCase().trim() === lower)
+    || db.contractors.find(c => c.name.toLowerCase().includes(lower) || lower.includes(c.name.toLowerCase()))
+    || null;
 }
-
-function getPaymentsForMonth(contractorId, month, year) {
-  return db.payments.filter(p => {
-    if (p.contractorId !== contractorId) return false;
-    const d = new Date(p.date + 'T00:00:00');
-    return d.getMonth() + 1 === month && d.getFullYear() === year;
-  });
+function getRefundStatus(refund) {
+  if (refund.transactionDate && refund.transactionDate.trim()) return 'processed';
+  if (!refund.refundTypeCategory || refund.refundTypeCategory.toLowerCase().trim() === 'unknown') return 'ticket';
+  return 'approved';
 }
-
-function getWeekNumber(dateStr, month, year) {
-  const d = new Date(dateStr + 'T00:00:00');
-  const day = d.getDate();
-  return Math.min(Math.ceil(day / 7), 4);
+function isWeekendContract(masterContract) {
+  return db.weekendContracts.some(w => w.masterContractId.toLowerCase().trim() === (masterContract || '').toLowerCase().trim());
+}
+function getTransactionsForMonth(month, year) {
+  return db.transactions.filter(t => {
+    const d = parseDate(t.transactionDate);
+    return d && d.getMonth() + 1 === month && d.getFullYear() === year;
+  }).sort((a, b) => (a.transactionDate || '').localeCompare(b.transactionDate || ''));
+}
+function getWeekOfMonth(dateStr) {
+  const d = parseDate(dateStr);
+  return d ? Math.min(Math.ceil(d.getDate() / 7), 4) : 1;
 }
 
 // ========== CALCULATIONS ==========
-
 function calcCommission(contractor, month, year) {
-  const payments = getPaymentsForMonth(contractor.id, month, year);
-  const totalCash = payments.reduce((s, p) => s + (p.cashCollected || 0), 0);
+  const all = getTransactionsForMonth(month, year);
 
   if (contractor.type === 'closer') {
-    const qualifiedPayments = payments.filter(isQualified);
-    const qualifiedCash = qualifiedPayments.reduce((s, p) => s + getCommissionableAmount(p), 0);
+    const mine = all.filter(t => t.closerId === contractor.id);
+    const totalCash = mine.reduce((s, t) => s + (t.amountPaid || 0), 0);
+    const qualifiedCash = mine.filter(t => (t.depositThreshold || '').toLowerCase() === 'yes')
+      .reduce((s, t) => s + (t.commissionableAmount || t.amountPaid || 0), 0);
     const base = qualifiedCash * 0.10;
     const bumpEligible = totalCash >= 150000;
     const bump = bumpEligible ? totalCash * 0.025 : 0;
-    return {
-      type: 'closer', base, bump, bumpEligible,
-      total: base + bump,
-      totalCash, qualifiedCash,
-      towardsThreshold: Math.max(0, 150000 - totalCash),
-      payments
-    };
+    return { type: 'closer', base, bump, bumpEligible, total: base + bump, totalCash, qualifiedCash, towardsThreshold: Math.max(0, 150000 - totalCash) };
   } else {
-    const qualifiedRegular = payments.filter(p => isQualified(p) && !p.isWeekendSet);
-    const qualifiedWeekend = payments.filter(p => isQualified(p) && p.isWeekendSet);
-    const regularCash = qualifiedRegular.reduce((s, p) => s + getCommissionableAmount(p), 0);
-    const weekendCash = qualifiedWeekend.reduce((s, p) => s + getCommissionableAmount(p), 0);
-    const regularComm = regularCash * 0.022;
-    const weekendComm = weekendCash * 0.03;
-    return {
-      type: 'setter',
-      regularComm, weekendComm,
-      total: regularComm + weekendComm,
-      totalCash, regularCash, weekendCash,
-      payments
-    };
+    const mine = all.filter(t => t.setterId === contractor.id);
+    const qualified = mine.filter(t => (t.depositThreshold || '').toLowerCase() === 'yes');
+    const regularCash = qualified.filter(t => !isWeekendContract(t.masterContract)).reduce((s, t) => s + (t.commissionableAmount || t.amountPaid || 0), 0);
+    const weekendCash = qualified.filter(t => isWeekendContract(t.masterContract)).reduce((s, t) => s + (t.commissionableAmount || t.amountPaid || 0), 0);
+    const totalCash = mine.reduce((s, t) => s + (t.amountPaid || 0), 0);
+    return { type: 'setter', regularCash, weekendCash, totalCash, regularComm: regularCash * 0.022, weekendComm: weekendCash * 0.03, total: regularCash * 0.022 + weekendCash * 0.03 };
   }
 }
 
-function getRefundEntriesForMonth(contractor, month, year) {
-  const contractorRefunds = db.refunds.filter(r => r.contractorId === contractor.id);
+function getRefundDeductionsForMonth(contractor, month, year) {
   const monthStart = new Date(year, month - 1, 1);
   const monthEnd = new Date(year, month, 0);
-  const nextMonthDay5 = new Date(year, month, 5);
-
+  const nextDay5 = new Date(year, month, 5);
   const entries = [];
 
-  for (const refund of contractorRefunds) {
-    const submitted = new Date(refund.submittedDate + 'T00:00:00');
-    const approved = refund.approvedDate ? new Date(refund.approvedDate + 'T00:00:00') : null;
-    const processed = refund.processedDate ? new Date(refund.processedDate + 'T00:00:00') : null;
+  const mine = db.refunds.filter(r => r.closerId === contractor.id || r.setterId === contractor.id);
 
-    const submittedThisMonth = submitted >= monthStart && submitted <= monthEnd;
-    const submittedFirst5Next = submitted > monthEnd && submitted <= nextMonthDay5;
-    const approvedThisMonth = approved && approved >= monthStart && approved <= monthEnd;
-    const processedThisMonth = processed && processed >= monthStart && processed <= monthEnd;
+  for (const r of mine) {
+    const status = getRefundStatus(r);
+    const approveDate = parseDate(r.approveDate);
+    const transDate = parseDate(r.transactionDate);
+    const weekend = isWeekendContract(r.masterContract);
+    const rate = contractor.type === 'closer' ? 0.10 : (weekend ? 0.03 : 0.022);
+    const commission = (r.amount || 0) * rate;
+    const desc = r.clientName || r.masterContract || 'Refund';
 
-    const commissionAmount = (refund.saleAmount || 0) * ((refund.rate || 0) / 100);
-
-    // Ticket submitted this month (or first 5 days of next month)
-    if (refund.status === 'ticket' && (submittedThisMonth || submittedFirst5Next)) {
-      entries.push({
-        label: `Refund Ticket: ${refund.description}`,
-        amount: -commissionAmount,
-        type: 'ticket',
-        id: refund.id
-      });
-    }
-
-    // Approved refund — status changed to approved this month, was submitted in a prior month
-    if (refund.status === 'approved' && approvedThisMonth && !submittedThisMonth && !submittedFirst5Next) {
-      entries.push({
-        label: `Approved Refund: ${refund.description}`,
-        amount: -commissionAmount,
-        type: 'approved',
-        id: refund.id
-      });
-    }
-
-    // Still pending as approved from a prior period — show continued withholding
-    if (refund.status === 'approved' && !approvedThisMonth && submitted < monthStart) {
-      entries.push({
-        label: `Approved Refund (continued): ${refund.description}`,
-        amount: -commissionAmount,
-        type: 'approved',
-        id: refund.id
-      });
-    }
-
-    // Processed this month — show negative + offset
-    if (refund.status === 'processed' && processedThisMonth) {
-      entries.push({
-        label: `Processed Refund: ${refund.description}`,
-        amount: -commissionAmount,
-        type: 'processed-neg',
-        id: refund.id
-      });
-      entries.push({
-        label: `Refund Offset: ${refund.description}`,
-        amount: commissionAmount,
-        type: 'processed-pos',
-        id: refund.id
-      });
+    if (status === 'ticket' && approveDate) {
+      const inMonth = approveDate >= monthStart && approveDate <= monthEnd;
+      const first5Next = approveDate > monthEnd && approveDate <= nextDay5;
+      if (inMonth || first5Next) entries.push({ label: `Refund Ticket: ${desc}`, amount: -commission, type: 'ticket' });
+    } else if (status === 'approved' && approveDate && approveDate >= monthStart && approveDate <= monthEnd) {
+      entries.push({ label: `Approved Refund: ${desc}`, amount: -commission, type: 'approved' });
+    } else if (status === 'processed' && transDate && transDate >= monthStart && transDate <= monthEnd) {
+      entries.push({ label: `Processed Refund: ${desc}`, amount: -commission, type: 'processed-neg' });
+      entries.push({ label: `Refund Offset: ${desc}`, amount: commission, type: 'processed-pos' });
     }
   }
-
   return entries;
 }
 
 function calcBonuses(contractor, month, year) {
-  const payments = getPaymentsForMonth(contractor.id, month, year);
+  const all = getTransactionsForMonth(month, year);
+  const mine = all.filter(t => contractor.type === 'closer' ? t.closerId === contractor.id : t.setterId === contractor.id);
   const monthStart = new Date(year, month - 1, 1);
   const monthEnd = new Date(year, month, 0);
-  const nextMonthDay5 = new Date(year, month, 5);
+  const nextDay5 = new Date(year, month, 5);
 
-  // Pre-treatment refunds for bonus deduction (tickets + approved + processed)
-  const pretreatmentRefunds = db.refunds.filter(r => {
-    if (r.contractorId !== contractor.id) return false;
-    const submitted = new Date(r.submittedDate + 'T00:00:00');
-    return submitted >= monthStart && submitted <= nextMonthDay5;
+  // Pre-treatment refunds (all statuses) for bonus deduction
+  const myRefunds = db.refunds.filter(r => (r.closerId === contractor.id || r.setterId === contractor.id) && (r.refundTypeCategory || '').toLowerCase().includes('pre'));
+
+  const byWeek = { 1: [], 2: [], 3: [], 4: [] };
+  mine.forEach(t => { const w = getWeekOfMonth(t.transactionDate); byWeek[w].push(t); });
+
+  const refundsByWeek = { 1: 0, 2: 0, 3: 0, 4: 0 };
+  myRefunds.forEach(r => {
+    const d = parseDate(r.approveDate);
+    if (!d) return;
+    if (d > monthEnd && d <= nextDay5) refundsByWeek[4] += (r.amount || 0);
+    else if (d >= monthStart && d <= monthEnd) { const w = Math.min(Math.ceil(d.getDate() / 7), 4); refundsByWeek[w] += (r.amount || 0); }
   });
 
-  // Group payments by week
-  const byWeek = { 1: [], 2: [], 3: [], 4: [] };
-  for (const p of payments) {
-    const w = getWeekNumber(p.date, month, year);
-    byWeek[w].push(p);
-  }
-
-  // Group refunds by week
-  const refundsByWeek = { 1: 0, 2: 0, 3: 0, 4: 0 };
-  for (const r of pretreatmentRefunds) {
-    const submitted = new Date(r.submittedDate + 'T00:00:00');
-    const day = submitted.getDate();
-    // First 5 of next month go to week 4
-    if (submitted > monthEnd) {
-      refundsByWeek[4] += (r.saleAmount || 0);
-    } else {
-      const w = Math.min(Math.ceil(day / 7), 4);
-      refundsByWeek[w] += (r.saleAmount || 0);
-    }
-  }
-
-  const weeklyBreakdown = [];
   let totalWeeklyBonus = 0;
-
+  const weeklyBreakdown = [];
   for (let w = 1; w <= 4; w++) {
-    const weekPayments = byWeek[w];
-    const grossCash = weekPayments.reduce((s, p) => s + (p.cashCollected || 0), 0);
-    const financingFees = weekPayments.reduce((s, p) => s + (p.financingFee || 0), 0);
+    const gross = byWeek[w].reduce((s, t) => s + (t.amountPaid || 0), 0);
     const refundAmt = refundsByWeek[w];
-    const netCash = grossCash - financingFees - refundAmt;
-    const qualifies = netCash >= 40000;
+    const net = gross - refundAmt;
+    const qualifies = net >= 40000;
     const bonus = qualifies ? (contractor.type === 'closer' ? 1000 : 500) : 0;
     totalWeeklyBonus += bonus;
-
-    weeklyBreakdown.push({
-      week: w, grossCash, financingFees, refundAmt,
-      netCash, qualifies, bonus
-    });
+    weeklyBreakdown.push({ week: w, gross, refundAmt, net, qualifies, bonus });
   }
 
-  // Monthly bonus for setters
   let monthlyBonus = 0;
   if (contractor.type === 'setter') {
-    const totalCash = payments.reduce((s, p) => s + (p.cashCollected || 0), 0);
+    const totalCash = mine.reduce((s, t) => s + (t.amountPaid || 0), 0);
     if (totalCash >= 100000) monthlyBonus = 1000;
     return { weeklyBreakdown, totalWeeklyBonus, monthlyBonus, totalCash };
   }
-
   return { weeklyBreakdown, totalWeeklyBonus, monthlyBonus };
 }
 
-// ========== RENDER CONTRACTORS ==========
-function renderContractors() {
-  const tbody = document.getElementById('contractors-tbody');
-  if (db.contractors.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="3" class="empty-msg" style="padding:20px;text-align:center">No contractors yet. Click "+ Add Contractor" to get started.</td></tr>';
-    return;
-  }
-  tbody.innerHTML = db.contractors.map(c => `
-    <tr>
-      <td>${c.name}</td>
-      <td><span class="badge ${c.type}">${c.type}</span></td>
-      <td><button class="btn-sm btn-danger" onclick="deleteContractor('${c.id}')">Delete</button></td>
-    </tr>
-  `).join('');
-}
-
-// ========== RENDER ENTRY ==========
-function renderEntry() {
-  const month = parseInt(document.getElementById('entry-month').value);
-  const year = parseInt(document.getElementById('entry-year').value);
-  const body = document.getElementById('entry-body');
-
-  if (db.contractors.length === 0) {
-    body.innerHTML = '<p class="empty-msg">Add contractors first on the Contractors tab.</p>';
-    return;
-  }
-
-  // Global import banner
-  const globalBanner = `
-    <div class="global-import-bar">
-      <span>Import your full spreadsheet (all setters at once):</span>
-      <div class="toolbar-actions">
-        <button class="btn-sm" onclick="downloadFullTemplate()">Download Template</button>
-        <label class="btn-sm btn-primary" style="cursor:pointer">
-          Import Full Spreadsheet
-          <input type="file" accept=".csv" style="display:none" onchange="importFullSpreadsheet(event)">
-        </label>
-      </div>
-    </div>`;
-
-  body.innerHTML = globalBanner + db.contractors.map(c => `
-    <div class="contractor-card">
-      <div class="card-header">
-        <h3>${c.name}</h3>
-        <span class="badge ${c.type}">${c.type}</span>
-      </div>
-      <div class="card-section">
-        <div class="section-toolbar">
-          <strong>Transactions — ${MONTHS[month - 1]} ${year}</strong>
-          <div class="toolbar-actions">
-            <button class="btn-sm" onclick="downloadFullTemplate()">Download Template</button>
-            <label class="btn-sm btn-primary" style="cursor:pointer">
-              Import CSV
-              <input type="file" accept=".csv" style="display:none" onchange="importFullSpreadsheet(event)">
-            </label>
-          </div>
-        </div>
-        ${renderTransactionsTable(c, month, year)}
-      </div>
-    </div>
-  `).join('');
-}
-
-function renderTransactionsTable(contractor, month, year) {
-  const isSetter = contractor.type === 'setter';
-  const nr = `nr-${contractor.id}`;
-  const today = new Date().toISOString().slice(0, 10);
-
-  const payments = getPaymentsForMonth(contractor.id, month, year);
-  const refunds = db.refunds.filter(r => {
-    if (r.contractorId !== contractor.id) return false;
-    const d = new Date(r.submittedDate + 'T00:00:00');
-    return d.getMonth() + 1 === month && d.getFullYear() === year;
-  });
-
-  const allRows = [
-    ...payments.map(p => ({ ...p, _type: 'payment' })),
-    ...refunds.map(r => ({ ...r, _type: 'refund', date: r.submittedDate }))
-  ].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
-
-  const existingRows = allRows.map(row => {
-    if (row._type === 'payment') {
-      const depLabel = 'depositThresholdMet' in row ? (row.depositThresholdMet ? 'Yes' : 'No') : (isQualified(row) ? 'Yes' : 'No');
-      return `
-        <tr>
-          <td><input class="ss-input" type="date" value="${row.date||''}" onchange="updatePayment('${row.id}','date',this.value)"></td>
-          <td><input class="ss-input" type="text" value="${row.processor||''}" onchange="updatePayment('${row.id}','processor',this.value)" placeholder="—"></td>
-          <td><input class="ss-input" type="text" value="${row.offering||''}" onchange="updatePayment('${row.id}','offering',this.value)" placeholder="—"></td>
-          <td><input class="ss-input" type="text" value="${row.clientEmail||''}" onchange="updatePayment('${row.id}','clientEmail',this.value)" placeholder="—"></td>
-          <td><input class="ss-input" type="text" value="${row.masterContract||''}" onchange="updatePayment('${row.id}','masterContract',this.value)" placeholder="—"></td>
-          <td><input class="ss-input" type="date" value="${row.contractSaleDate||''}" onchange="updatePayment('${row.id}','contractSaleDate',this.value)"></td>
-          <td><input class="ss-input" type="number" value="${row.cashCollected||0}" step="0.01" onchange="updatePayment('${row.id}','cashCollected',this.value)"></td>
-          <td><input class="ss-input" type="number" value="${row.commissionableAmount??row.cashCollected??0}" step="0.01" onchange="updatePayment('${row.id}','commissionableAmount',this.value)"></td>
-          <td class="text-muted">—</td>
-          <td>
-            <select onchange="updatePayment('${row.id}','depositThresholdMet',this.value==='Yes')">
-              <option ${depLabel==='Yes'?'selected':''}>Yes</option>
-              <option ${depLabel==='No'?'selected':''}>No</option>
-            </select>
-          </td>
-          ${isSetter ? `<td style="text-align:center"><input type="checkbox" ${row.isWeekendSet?'checked':''} onchange="updatePayment('${row.id}','isWeekendSet',this.checked)"></td>` : ''}
-          <td><button class="btn-sm btn-danger" onclick="deletePayment('${row.id}')">Del</button></td>
-        </tr>`;
-    } else {
-      return `
-        <tr class="refund-row">
-          <td><input class="ss-input" type="date" value="${row.submittedDate||''}" onchange="updateRefundField('${row.id}','submittedDate',this.value)"></td>
-          <td class="text-muted">—</td>
-          <td class="text-muted">—</td>
-          <td><input class="ss-input" type="text" value="${row.clientEmail||''}" onchange="updateRefundField('${row.id}','clientEmail',this.value)" placeholder="—"></td>
-          <td><input class="ss-input" type="text" value="${row.description||''}" onchange="updateRefundField('${row.id}','description',this.value)"></td>
-          <td class="text-muted">—</td>
-          <td class="text-red"><input class="ss-input" type="number" value="${-(row.saleAmount||0)}" step="0.01" onchange="updateRefundField('${row.id}','saleAmount',Math.abs(parseFloat(this.value)||0))"></td>
-          <td class="text-red">${fmt(-(row.saleAmount||0))}</td>
-          <td>
-            <select onchange="updateRefundStatus('${row.id}',this.value)">
-              <option value="ticket" ${row.status==='ticket'?'selected':''}>Refund Ticket</option>
-              <option value="approved" ${row.status==='approved'?'selected':''}>Approved</option>
-              <option value="processed" ${row.status==='processed'?'selected':''}>Processed</option>
-            </select>
-          </td>
-          <td class="text-muted">—</td>
-          ${isSetter ? '<td class="text-muted">—</td>' : ''}
-          <td><button class="btn-sm btn-danger" onclick="deleteRefund('${row.id}')">Del</button></td>
-        </tr>`;
-    }
-  }).join('');
-
-  const newRow = `
-    <tr class="new-row">
-      <td><input class="ss-input" type="date" id="${nr}-date" value="${today}"></td>
-      <td><input class="ss-input" type="text" id="${nr}-processor" placeholder="Processor"></td>
-      <td><input class="ss-input" type="text" id="${nr}-offering" placeholder="Offering"></td>
-      <td><input class="ss-input" type="text" id="${nr}-email" placeholder="Master Email"></td>
-      <td><input class="ss-input" type="text" id="${nr}-contract" placeholder="Master Contract"></td>
-      <td><input class="ss-input" type="date" id="${nr}-saledate"></td>
-      <td><input class="ss-input" type="number" id="${nr}-amount" step="0.01" placeholder="Amount (- for refund)"></td>
-      <td><input class="ss-input" type="number" id="${nr}-commissionable" step="0.01" placeholder="Commissionable"></td>
-      <td class="text-muted">auto</td>
-      <td>
-        <select id="${nr}-threshold">
-          <option value="Yes">Yes</option>
-          <option value="No">No</option>
-        </select>
-      </td>
-      ${isSetter ? `<td style="text-align:center"><input type="checkbox" id="${nr}-weekend"></td>` : ''}
-      <td><button class="btn-sm btn-primary" onclick="saveNewTransaction('${contractor.id}',${isSetter})">+ Add</button></td>
-    </tr>`;
-
-  return `
-    <table class="data-table spreadsheet">
-      <thead>
-        <tr>
-          <th>Transaction Date</th><th>Processor</th><th>Offering</th>
-          <th>Master Email</th><th>Master Contract</th><th>Contract Sale Date</th>
-          <th>Amount Paid</th><th>Commissionable Amount</th>
-          <th>Refund Status Approx.</th><th>Deposit Threshold</th>
-          ${isSetter ? '<th>Weekend?</th>' : ''}<th></th>
-        </tr>
-      </thead>
-      <tbody>${existingRows}${newRow}</tbody>
-    </table>`;
-}
-
-// ========== SPREADSHEET HELPERS ==========
-function updatePayment(id, field, value) {
-  const p = db.payments.find(p => p.id === id);
-  if (!p) return;
-  const numFields = ['cashCollected','commissionableAmount','financingFee','contractValue','depositAmount'];
-  if (numFields.includes(field)) p[field] = parseFloat(value) || 0;
-  else if (field === 'isWeekendSet' || field === 'depositThresholdMet') p[field] = value === true || value === 'true';
-  else p[field] = value;
-  saveDB();
-}
-
-function updateRefundField(id, field, value) {
-  const r = db.refunds.find(r => r.id === id);
-  if (!r) return;
-  r[field] = ['saleAmount','rate'].includes(field) ? (parseFloat(value) || 0) : value;
-  saveDB();
-}
-
-function saveNewTransaction(contractorId, isSetter) {
-  const p = `nr-${contractorId}`;
-  const date = document.getElementById(`${p}-date`)?.value;
-  const amountPaid = parseFloat(document.getElementById(`${p}-amount`)?.value) || 0;
-  if (!date || amountPaid === 0) { alert('Please enter a date and amount.'); return; }
-  const contractor = db.contractors.find(c => c.id === contractorId);
-  const processor = document.getElementById(`${p}-processor`)?.value || '';
-  const offering = document.getElementById(`${p}-offering`)?.value || '';
-  const clientEmail = document.getElementById(`${p}-email`)?.value || '';
-  const masterContract = document.getElementById(`${p}-contract`)?.value || '';
-  const contractSaleDate = document.getElementById(`${p}-saledate`)?.value || '';
-  const commissionable = parseFloat(document.getElementById(`${p}-commissionable`)?.value) || Math.abs(amountPaid);
-  const depositThresholdMet = document.getElementById(`${p}-threshold`)?.value === 'Yes';
-  const isWeekendSet = isSetter ? (document.getElementById(`${p}-weekend`)?.checked ?? false) : false;
-  const today = new Date().toISOString().slice(0, 10);
-  if (amountPaid < 0) {
-    db.refunds.push({
-      id: genId(), contractorId,
-      description: masterContract || clientEmail || `Refund ${date}`,
-      saleAmount: Math.abs(amountPaid),
-      rate: contractor.type === 'closer' ? 10 : 2.20,
-      status: 'ticket', submittedDate: date,
-      approvedDate: null, processedDate: null,
-      clientEmail, masterContract, processor, offering
-    });
-  } else {
-    db.payments.push({
-      id: genId(), contractorId, date,
-      cashCollected: amountPaid, commissionableAmount: commissionable,
-      depositThresholdMet, contractValue: 0, depositAmount: 0,
-      financingFee: 0, isWeekendSet,
-      processor, offering, clientEmail, masterContract, contractSaleDate
-    });
-  }
-  saveDB();
-  renderEntry();
-}
-
-// ========== CSV IMPORT / EXPORT ==========
+// ========== CSV PARSER ==========
 function parseCSV(text) {
   const lines = text.trim().split(/\r?\n/);
   if (lines.length < 2) return { headers: [], rows: [] };
@@ -574,144 +266,323 @@ function parseCSV(text) {
     if (!lines[i].trim()) continue;
     const cols = parseRow(lines[i]);
     const row = {};
-    headers.forEach((h, j) => row[h] = cols[j] || '');
+    headers.forEach((h, j) => row[h.trim()] = (cols[j] || '').trim());
     rows.push(row);
   }
   return { headers, rows };
 }
-
-function downloadFullTemplate() {
-  const headers = 'Transaction Date,Processor,Offering,Master Email,Master Contract,Contract Sale Date,Amount Paid,Commissionable Amount,Refund Status Approximation,Name,Deposit Threshold';
-  const ex1 = '4/10/2026,UGA NY,Hair,kemique@yahoo.com,kemique45870Stem Kemique Jacobs,8/1/2025,$124.75,$124.75,,Jonah Shilvock,Yes';
-  const ex2 = '4/13/2026,PatientFi,Hair,greg.levi@jll.com,greg.le45812Stem Greg Levi,6/4/2025,-$7500.00,-$7500.00,Pre Treatment,Jonah Shilvock,';
-  downloadCSV(`${headers}\n${ex1}\n${ex2}\n`, 'springs-payroll-template.csv');
-}
-
-function downloadPaymentTemplate(isSetter) {
-  downloadFullTemplate();
-}
-
-function importFullSpreadsheet(event) {
-  const file = event.target.files[0];
-  if (!file) return;
-  const month = parseInt(document.getElementById('entry-month').value);
-  const year = parseInt(document.getElementById('entry-year').value);
-  const reader = new FileReader();
-  reader.onload = e => {
-    const { rows } = parseCSV(e.target.result);
-    if (!rows.length) { alert('No data found in the file.'); return; }
-    let imported = 0; let refunds = 0; const errors = [];
-    rows.forEach((row, i) => {
-      const rowNum = i + 2;
-      const dateRaw = row['Transaction Date'] || row['Date'] || '';
-      const setterName = (row['Name'] || row['Setter'] || row['Closer'] || '').trim();
-      const amountRaw = (row['Amount Paid'] || '').replace(/[$,]/g, '');
-      const commRaw = (row['Commissionable Amount'] || '').replace(/[$,]/g, '');
-      const depositThreshold = (row['Deposit Threshold'] || '').toLowerCase().trim() === 'yes';
-      const refundStatus = (row['Refund Status Approximation'] || '').trim();
-      if (!dateRaw) { errors.push(`Row ${rowNum}: missing date`); return; }
-      if (!setterName) { errors.push(`Row ${rowNum}: missing Name`); return; }
-      const contractor = db.contractors.find(c =>
-        c.name.toLowerCase().trim() === setterName.toLowerCase() ||
-        c.name.toLowerCase().includes(setterName.toLowerCase()) ||
-        setterName.toLowerCase().includes(c.name.toLowerCase())
-      );
-      if (!contractor) { errors.push(`Row ${rowNum}: setter "${setterName}" not found — add them to Contractors first`); return; }
-      const amountPaid = parseFloat(amountRaw) || 0;
-      const commissionableAmount = parseFloat(commRaw) || 0;
-      const processor = row['Processor'] || '';
-      const offering = row['Offering'] || '';
-      const clientEmail = row['Master Email'] || '';
-      const masterContract = row['Master Contract'] || '';
-      const contractSaleDate = row['Contract Sale Date'] || '';
-      // Parse date — handle M/D/YYYY format
-      const dateObj = new Date(dateRaw);
-      const date = isNaN(dateObj) ? dateRaw : dateObj.toISOString().slice(0, 10);
-      if (amountPaid < 0) {
-        // Negative = refund entry
-        db.refunds.push({
-          id: genId(), contractorId: contractor.id,
-          description: masterContract || clientEmail || `Refund row ${rowNum}`,
-          saleAmount: Math.abs(amountPaid),
-          rate: contractor.type === 'closer' ? 10 : 2.20,
-          status: 'ticket',
-          refundStatusApproximation: refundStatus,
-          submittedDate: date, approvedDate: null, processedDate: null
-        });
-        refunds++;
-      } else {
-        db.payments.push({
-          id: genId(), contractorId: contractor.id, date,
-          contractValue: 0, depositAmount: 0,
-          cashCollected: amountPaid,
-          commissionableAmount: Math.abs(commissionableAmount),
-          depositThresholdMet: depositThreshold,
-          financingFee: 0,
-          isWeekendSet: false,
-          processor, offering, clientEmail, masterContract, contractSaleDate
-        });
-        imported++;
-      }
-    });
-    saveDB(); renderEntry();
-    let msg = `Imported ${imported} payment(s) and ${refunds} refund(s).`;
-    if (errors.length) msg += `\n\nSkipped ${errors.length} row(s):\n` + errors.join('\n');
-    alert(msg);
-    event.target.value = '';
-  };
-  reader.readAsText(file);
-}
-
-function importPaymentsCSV(contractorId, isSetter, event) {
-  // Delegate to full spreadsheet import
-  importFullSpreadsheet(event);
-}
-
-function downloadRefundTemplate() {
-  downloadCSV(
-    'Description,Sale Amount,Commission Rate (%),Status,Submitted Date\nJohn Doe Job #123,5000,10,ticket,2026-04-20\n',
-    'refunds-template.csv'
-  );
-}
-
-function importRefundsCSV(contractorId, event) {
-  const file = event.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = e => {
-    const { rows } = parseCSV(e.target.result);
-    if (!rows.length) { alert('No data found in CSV.'); return; }
-    let imported = 0; const errors = [];
-    const today = new Date().toISOString().slice(0, 10);
-    rows.forEach((row, i) => {
-      const description = (row['Description'] || row['description'] || '').trim();
-      const saleAmount = parseFloat(row['Sale Amount'] || row['sale amount'] || 0);
-      if (!description || saleAmount <= 0) { errors.push(`Row ${i + 2}: missing description or sale amount`); return; }
-      const status = ['ticket','approved','processed'].includes((row['Status'] || row['status'] || '').toLowerCase().trim())
-        ? (row['Status'] || row['status']).toLowerCase().trim() : 'ticket';
-      db.refunds.push({
-        id: genId(), contractorId, description, saleAmount,
-        rate: parseFloat(row['Commission Rate (%)'] || row['Commission Rate'] || row['rate'] || 0),
-        status,
-        submittedDate: row['Submitted Date'] || row['submitted date'] || today,
-        approvedDate: (status === 'approved' || status === 'processed') ? today : null,
-        processedDate: status === 'processed' ? today : null
-      });
-      imported++;
-    });
-    saveDB(); renderEntry();
-    alert(`Imported ${imported} refund(s).${errors.length ? '\n\nSkipped:\n' + errors.join('\n') : ''}`);
-    event.target.value = '';
-  };
-  reader.readAsText(file);
-}
-
 function downloadCSV(content, filename) {
   const blob = new Blob([content], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
+}
+function col(row, ...names) {
+  for (const n of names) { if (row[n] !== undefined && row[n] !== '') return row[n]; }
+  return '';
+}
+
+// ========== IMPORT: MAIN SPREADSHEET ==========
+function downloadMainTemplate() {
+  const h = 'Transaction Date,Processor,Offering,Master Email,Master Contract,Contract Sale Date,Amount Paid,Commissionable Amount,Refund Status Approximation,Closer,Setter,Deposit Threshold';
+  const r = '4/1/2026,EPD FL,Hair,hkhan7187@gmail.com,anasran46101MSC IAns Rana,3/20/2026,$8500.00,$8500.00,,Alyssa Stilwell,N/A,Yes';
+  downloadCSV(`${h}\n${r}\n`, 'springs-main-template.csv');
+}
+function importMainSpreadsheet(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const { rows } = parseCSV(e.target.result);
+    if (!rows.length) { alert('No data found.'); return; }
+    let imported = 0; const errors = [];
+    rows.forEach((row, i) => {
+      const rowNum = i + 2;
+      const dateRaw = col(row, 'Transaction Date', 'transaction date');
+      const masterContract = col(row, 'Master Contract', 'master contract');
+      const amountRaw = col(row, 'Amount Paid', 'amount paid').replace(/[$,]/g, '');
+      const commRaw = col(row, 'Commissionable Amount', 'commissionable amount').replace(/[$,]/g, '');
+      const closerName = col(row, 'Closer', 'closer');
+      const setterName = col(row, 'Setter', 'setter', 'Name', 'name');
+      const depositThreshold = col(row, 'Deposit Threshold', 'deposit threshold');
+      if (!dateRaw) { errors.push(`Row ${rowNum}: missing Transaction Date`); return; }
+      const transactionDate = toISODate(dateRaw);
+      const amountPaid = parseFloat(amountRaw) || 0;
+      const commissionableAmount = parseFloat(commRaw) || Math.abs(amountPaid);
+      const closer = findContractorByName(closerName);
+      const setter = findContractorByName(setterName);
+      if (closerName && !closer) errors.push(`Row ${rowNum}: closer "${closerName}" not found in Contractors`);
+      if (setterName && setterName.toLowerCase() !== 'n/a' && !setter) errors.push(`Row ${rowNum}: setter "${setterName}" not found in Contractors`);
+      db.transactions.push({
+        id: genId(), transactionDate,
+        processor: col(row, 'Processor', 'processor'),
+        offering: col(row, 'Offering', 'offering'),
+        clientEmail: col(row, 'Master Email', 'master email'),
+        masterContract,
+        contractSaleDate: toISODate(col(row, 'Contract Sale Date', 'contract sale date')),
+        amountPaid, commissionableAmount,
+        refundStatusApproximation: col(row, 'Refund Status Approximation', 'refund status approximation'),
+        closerName, settterName: setterName,
+        closerId: closer?.id || null,
+        setterId: setter?.id || null,
+        depositThreshold: depositThreshold || 'Yes'
+      });
+      imported++;
+    });
+    saveDB(); renderEntry();
+    alert(`Imported ${imported} transaction(s).${errors.length ? '\n\nNotes:\n' + errors.join('\n') : ''}`);
+    event.target.value = '';
+  };
+  reader.readAsText(file);
+}
+
+// ========== IMPORT: WEEKEND SETS ==========
+function downloadWeekendTemplate() {
+  downloadCSV('Master Contract,Type,Offering\ntmarti346112Stem Tony Martinez,Set on Weekend (3%),Hair\n', 'springs-weekend-sets-template.csv');
+}
+function importWeekendSets(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const { rows } = parseCSV(e.target.result);
+    if (!rows.length) { alert('No data found.'); return; }
+    let added = 0;
+    rows.forEach(row => {
+      const masterContractId = col(row, 'Master Contract', 'master contract', 'Master Contract ID') || Object.values(row)[0] || '';
+      if (!masterContractId) return;
+      const already = db.weekendContracts.some(w => w.masterContractId.toLowerCase() === masterContractId.toLowerCase());
+      if (!already) { db.weekendContracts.push({ masterContractId, offering: col(row, 'Offering', 'offering') }); added++; }
+    });
+    saveDB();
+    alert(`Added ${added} weekend contract(s). Total: ${db.weekendContracts.length}.`);
+    event.target.value = '';
+  };
+  reader.readAsText(file);
+}
+
+// ========== IMPORT: REFUNDS ==========
+function downloadRefundTemplate() {
+  const h = 'Refund Approve,Client Name,Email,Master Contract,Offer,Refund Reason,Processor,Refund Type,Amount,Notes,Closer,Setter,Refund Type,Transaction Date';
+  const r = '9/2/2024,Craig Patrick,craigpatrick86@gmail.com,craigpa45531Ere ED,ED,Cancellation,EPD,Pre - Patient Fin,$500.00,Needs to refund,Isaiah Moore,Camden Kross,Pre Treatment,';
+  downloadCSV(`${h}\n${r}\n`, 'springs-refunds-template.csv');
+}
+function importRefunds(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const { rows } = parseCSV(e.target.result);
+    if (!rows.length) { alert('No data found.'); return; }
+    let imported = 0; const errors = [];
+    rows.forEach((row, i) => {
+      const rowNum = i + 2;
+      const masterContract = col(row, 'Master Contract', 'master contract');
+      const amountRaw = col(row, 'Amount', 'amount').replace(/[$,]/g, '');
+      const amount = Math.abs(parseFloat(amountRaw) || 0);
+      if (!masterContract || amount <= 0) { errors.push(`Row ${rowNum}: missing Master Contract or Amount`); return; }
+      const closerName = col(row, 'Closer', 'closer');
+      const setterName = col(row, 'Setter', 'setter');
+      const closer = findContractorByName(closerName);
+      const setter = findContractorByName(setterName);
+      // Determine status: check second Refund Type column (category)
+      const headers = Object.keys(row);
+      const refundTypeKeys = headers.filter(h => h.toLowerCase().includes('refund type'));
+      const refundTypeSpecific = refundTypeKeys[0] ? row[refundTypeKeys[0]] : '';
+      const refundTypeCategory = refundTypeKeys[1] ? row[refundTypeKeys[1]] : '';
+      const approveDate = toISODate(col(row, 'Refund Approve', 'refund approve'));
+      const transactionDate = toISODate(col(row, 'Transaction Date', 'transaction date'));
+      db.refunds.push({
+        id: genId(),
+        approveDate, clientName: col(row, 'Client Name', 'client name'),
+        clientEmail: col(row, 'Email', 'email'),
+        masterContract, offering: col(row, 'Offer', 'offer', 'Offering'),
+        refundReason: col(row, 'Refund Reason', 'refund reason'),
+        processor: col(row, 'Processor', 'processor'),
+        refundTypeSpecific, amount,
+        notes: col(row, 'Notes', 'notes'),
+        closerName, setterName,
+        closerId: closer?.id || null,
+        setterId: setter?.id || null,
+        refundTypeCategory, transactionDate
+      });
+      imported++;
+    });
+    saveDB(); renderEntry();
+    alert(`Imported ${imported} refund(s).${errors.length ? '\n\nNotes:\n' + errors.join('\n') : ''}`);
+    event.target.value = '';
+  };
+  reader.readAsText(file);
+}
+
+// ========== RENDER CONTRACTORS ==========
+function renderContractors() {
+  const tbody = document.getElementById('contractors-tbody');
+  if (!db.contractors.length) {
+    tbody.innerHTML = '<tr><td colspan="3" style="padding:20px;text-align:center;color:#9ca3af">No contractors yet. Click "+ Add Contractor" to get started.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = db.contractors.map(c => `
+    <tr>
+      <td>${c.name}</td>
+      <td><span class="badge ${c.type}">${c.type}</span></td>
+      <td><button class="btn-sm btn-danger" onclick="deleteContractor('${c.id}')">Delete</button></td>
+    </tr>`).join('');
+}
+
+// ========== RENDER ENTRY ==========
+function renderEntry() {
+  const month = parseInt(document.getElementById('entry-month').value);
+  const year = parseInt(document.getElementById('entry-year').value);
+  const body = document.getElementById('entry-body');
+
+  const importBar = `
+    <div class="global-import-bar">
+      <div class="import-group">
+        <span class="import-label">Main Spreadsheet</span>
+        <button class="btn-sm" onclick="downloadMainTemplate()">Template</button>
+        <label class="btn-sm btn-primary" style="cursor:pointer">Import
+          <input type="file" accept=".csv" style="display:none" onchange="importMainSpreadsheet(event)">
+        </label>
+      </div>
+      <div class="import-group">
+        <span class="import-label">Weekend Sets (3%)</span>
+        <button class="btn-sm" onclick="downloadWeekendTemplate()">Template</button>
+        <label class="btn-sm btn-primary" style="cursor:pointer">Import
+          <input type="file" accept=".csv" style="display:none" onchange="importWeekendSets(event)">
+        </label>
+      </div>
+      <div class="import-group">
+        <span class="import-label">Refunds</span>
+        <button class="btn-sm" onclick="downloadRefundTemplate()">Template</button>
+        <label class="btn-sm btn-primary" style="cursor:pointer">Import
+          <input type="file" accept=".csv" style="display:none" onchange="importRefunds(event)">
+        </label>
+      </div>
+    </div>`;
+
+  body.innerHTML = importBar + renderTransactionsSection(month, year) + renderRefundsSection();
+}
+
+function renderTransactionsSection(month, year) {
+  const transactions = getTransactionsForMonth(month, year);
+  const today = new Date().toISOString().slice(0, 10);
+  const nr = 'nr-txn';
+
+  const rows = transactions.map(t => `
+    <tr>
+      <td><input class="ss-input" type="date" value="${t.transactionDate||''}" onchange="updateTransaction('${t.id}','transactionDate',this.value)"></td>
+      <td><input class="ss-input" type="text" value="${t.processor||''}" onchange="updateTransaction('${t.id}','processor',this.value)" placeholder="—"></td>
+      <td><input class="ss-input" type="text" value="${t.offering||''}" onchange="updateTransaction('${t.id}','offering',this.value)" placeholder="—"></td>
+      <td><input class="ss-input" type="text" value="${t.clientEmail||''}" onchange="updateTransaction('${t.id}','clientEmail',this.value)" placeholder="—"></td>
+      <td><input class="ss-input" type="text" value="${t.masterContract||''}" onchange="updateTransaction('${t.id}','masterContract',this.value)" placeholder="—"></td>
+      <td><input class="ss-input" type="date" value="${t.contractSaleDate||''}" onchange="updateTransaction('${t.id}','contractSaleDate',this.value)"></td>
+      <td><input class="ss-input" type="number" value="${t.amountPaid||''}" step="0.01" onchange="updateTransaction('${t.id}','amountPaid',parseFloat(this.value)||0)"></td>
+      <td><input class="ss-input" type="number" value="${t.commissionableAmount||''}" step="0.01" onchange="updateTransaction('${t.id}','commissionableAmount',parseFloat(this.value)||0)"></td>
+      <td><input class="ss-input" type="text" value="${t.refundStatusApproximation||''}" onchange="updateTransaction('${t.id}','refundStatusApproximation',this.value)" placeholder="—"></td>
+      <td><input class="ss-input" type="text" value="${t.closerName||''}" onchange="updateTransactionPerson('${t.id}','closer',this.value)" placeholder="—"></td>
+      <td><input class="ss-input" type="text" value="${t.settterName||t.setterName||''}" onchange="updateTransactionPerson('${t.id}','setter',this.value)" placeholder="N/A"></td>
+      <td>
+        <select onchange="updateTransaction('${t.id}','depositThreshold',this.value)">
+          <option ${(t.depositThreshold||'').toLowerCase()==='yes'?'selected':''}>Yes</option>
+          <option ${(t.depositThreshold||'').toLowerCase()!=='yes'?'selected':''}>No</option>
+        </select>
+      </td>
+      <td><button class="btn-sm btn-danger" onclick="deleteTransaction('${t.id}')">Del</button></td>
+    </tr>`).join('');
+
+  const newRow = `
+    <tr class="new-row">
+      <td><input class="ss-input" type="date" id="${nr}-date" value="${today}"></td>
+      <td><input class="ss-input" type="text" id="${nr}-processor" placeholder="Processor"></td>
+      <td><input class="ss-input" type="text" id="${nr}-offering" placeholder="Offering"></td>
+      <td><input class="ss-input" type="text" id="${nr}-email" placeholder="Master Email"></td>
+      <td><input class="ss-input" type="text" id="${nr}-contract" placeholder="Master Contract"></td>
+      <td><input class="ss-input" type="date" id="${nr}-saledate"></td>
+      <td><input class="ss-input" type="number" id="${nr}-amount" step="0.01" placeholder="Amount Paid"></td>
+      <td><input class="ss-input" type="number" id="${nr}-commissionable" step="0.01" placeholder="Commissionable"></td>
+      <td><input class="ss-input" type="text" id="${nr}-refundstatus" placeholder="—"></td>
+      <td><input class="ss-input" type="text" id="${nr}-closer" placeholder="Closer name"></td>
+      <td><input class="ss-input" type="text" id="${nr}-setter" placeholder="Setter / N/A"></td>
+      <td><select id="${nr}-threshold"><option>Yes</option><option>No</option></select></td>
+      <td><button class="btn-sm btn-primary" onclick="saveNewTransaction()">+ Add</button></td>
+    </tr>`;
+
+  return `
+    <div class="contractor-card">
+      <div class="card-header">
+        <h3>Transactions — ${MONTHS[month-1]} ${year}</h3>
+        <span style="font-size:12px;color:#6b7280">${transactions.length} record(s)</span>
+      </div>
+      <div class="card-section">
+        <table class="data-table spreadsheet">
+          <thead>
+            <tr>
+              <th>Transaction Date</th><th>Processor</th><th>Offering</th>
+              <th>Master Email</th><th>Master Contract</th><th>Contract Sale Date</th>
+              <th>Amount Paid</th><th>Commissionable Amount</th>
+              <th>Refund Status Approx.</th><th>Closer</th><th>Setter</th>
+              <th>Deposit Threshold</th><th></th>
+            </tr>
+          </thead>
+          <tbody>${rows}${newRow}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function renderRefundsSection() {
+  const refunds = db.refunds;
+  const statusLabel = { ticket: 'Refund Ticket', approved: 'Approved', processed: 'Processed' };
+  const statusClass = { ticket: 'badge-ticket', approved: 'badge-approved', processed: 'badge-processed' };
+
+  const rows = refunds.map(r => {
+    const status = getRefundStatus(r);
+    return `
+      <tr class="${status === 'ticket' ? '' : status === 'approved' ? 'approved-row' : 'processed-row'}">
+        <td>${r.approveDate || '—'}</td>
+        <td>${r.clientName || '—'}</td>
+        <td>${r.clientEmail || '—'}</td>
+        <td>${r.masterContract || '—'}</td>
+        <td>${r.offering || '—'}</td>
+        <td>${r.refundReason || '—'}</td>
+        <td>${r.processor || '—'}</td>
+        <td>${r.refundTypeSpecific || '—'}</td>
+        <td class="text-red">${fmt(-(r.amount || 0))}</td>
+        <td>${r.notes || '—'}</td>
+        <td>${r.closerName || '—'}</td>
+        <td>${r.setterName || '—'}</td>
+        <td>${r.refundTypeCategory || '—'}</td>
+        <td>${r.transactionDate || '—'}</td>
+        <td><span class="status-badge ${statusClass[status]}">${statusLabel[status]}</span></td>
+        <td><button class="btn-sm btn-danger" onclick="deleteRefund('${r.id}')">Del</button></td>
+      </tr>`;
+  }).join('');
+
+  const empty = refunds.length === 0 ? '<tr><td colspan="16" style="padding:16px;text-align:center;color:#9ca3af">No refunds imported yet.</td></tr>' : '';
+
+  return `
+    <div class="contractor-card" style="margin-top:16px">
+      <div class="card-header">
+        <h3>Refunds</h3>
+        <span style="font-size:12px;color:#6b7280">${refunds.length} record(s)</span>
+      </div>
+      <div class="card-section">
+        <table class="data-table spreadsheet">
+          <thead>
+            <tr>
+              <th>Approve Date</th><th>Client Name</th><th>Email</th>
+              <th>Master Contract</th><th>Offering</th><th>Reason</th>
+              <th>Processor</th><th>Refund Type</th><th>Amount</th>
+              <th>Notes</th><th>Closer</th><th>Setter</th>
+              <th>Category</th><th>Processed Date</th><th>Status</th><th></th>
+            </tr>
+          </thead>
+          <tbody>${rows}${empty}</tbody>
+        </table>
+      </div>
+    </div>`;
 }
 
 // ========== RENDER SUMMARY ==========
@@ -720,371 +591,163 @@ function renderSummary() {
   const year = parseInt(document.getElementById('summary-year').value);
   const body = document.getElementById('summary-body');
 
-  if (db.contractors.length === 0) {
-    body.innerHTML = '<p class="empty-msg">No contractors found. Add them on the Contractors tab.</p>';
-    return;
-  }
+  if (!db.contractors.length) { body.innerHTML = '<p class="empty-msg">No contractors found.</p>'; return; }
 
   body.innerHTML = db.contractors.map(c => {
     const comm = calcCommission(c, month, year);
-    const refundEntries = getRefundEntriesForMonth(c, month, year);
+    const refundEntries = getRefundDeductionsForMonth(c, month, year);
     const bonuses = calcBonuses(c, month, year);
-
-    const totalRefundImpact = refundEntries.reduce((s, e) => s + e.amount, 0);
+    const totalRefund = refundEntries.reduce((s, e) => s + e.amount, 0);
     const totalBonuses = bonuses.totalWeeklyBonus + bonuses.monthlyBonus;
-    const totalPay = comm.total + totalRefundImpact + totalBonuses;
+    const totalPay = comm.total + totalRefund + totalBonuses;
 
     return `
       <div class="summary-card">
         <div class="card-header">
           <div style="display:flex;align-items:center;gap:8px">
-            <h3>${c.name}</h3>
-            <span class="badge ${c.type}">${c.type}</span>
+            <h3>${c.name}</h3><span class="badge ${c.type}">${c.type}</span>
           </div>
           <div>
             <div style="font-size:11px;color:#6b7280;text-align:right">${MONTHS[month-1]} ${year}</div>
             <div class="total-pay">${fmt(totalPay)}</div>
           </div>
         </div>
-
         <div class="summary-grid">
-          <!-- Commission Section -->
           <div class="summary-section">
             <h4>Commission</h4>
             ${c.type === 'closer' ? `
-              <div class="line-item">
-                <span>Qualified Cash</span>
-                <span>${fmt(comm.qualifiedCash)}</span>
-              </div>
-              <div class="line-item">
-                <span>Base (10%)</span>
-                <span>${fmt(comm.base)}</span>
-              </div>
-              <div class="line-item ${comm.bumpEligible ? '' : 'text-muted'}">
-                <span>2.5% Bump ${comm.bumpEligible ? `(Total: ${fmt(comm.totalCash)})` : `(Need ${fmt(comm.towardsThreshold)} more)`}</span>
-                <span>${comm.bumpEligible ? fmt(comm.bump) : '—'}</span>
-              </div>
-              <div class="line-item total">
-                <span>Total Commission</span>
-                <span>${fmt(comm.total)}</span>
+              <div class="line-item"><span>Qualified Cash</span><span>${fmt(comm.qualifiedCash)}</span></div>
+              <div class="line-item"><span>Base (10%)</span><span>${fmt(comm.base)}</span></div>
+              <div class="line-item ${comm.bumpEligible?'':'text-muted'}">
+                <span>2.5% Bump ${comm.bumpEligible?`(Total: ${fmt(comm.totalCash)})`:`(Need ${fmt(comm.towardsThreshold)} more)`}</span>
+                <span>${comm.bumpEligible?fmt(comm.bump):'—'}</span>
               </div>
             ` : `
-              <div class="line-item">
-                <span>Regular Sets Cash</span>
-                <span>${fmt(comm.regularCash)}</span>
-              </div>
-              <div class="line-item">
-                <span>Regular (2.20%)</span>
-                <span>${fmt(comm.regularComm)}</span>
-              </div>
-              <div class="line-item">
-                <span>Weekend Sets Cash</span>
-                <span>${fmt(comm.weekendCash)}</span>
-              </div>
-              <div class="line-item">
-                <span>Weekend (3%)</span>
-                <span>${fmt(comm.weekendComm)}</span>
-              </div>
-              <div class="line-item total">
-                <span>Total Commission</span>
-                <span>${fmt(comm.total)}</span>
-              </div>
+              <div class="line-item"><span>Regular Sets (2.20%)</span><span>${fmt(comm.regularComm)}</span></div>
+              <div class="line-item"><span>Weekend Sets (3%)</span><span>${fmt(comm.weekendComm)}</span></div>
             `}
+            <div class="line-item total"><span>Total Commission</span><span>${fmt(comm.total)}</span></div>
           </div>
-
-          <!-- Refunds Section -->
           <div class="summary-section">
             <h4>Refund Deductions</h4>
             ${refundEntries.length === 0
               ? '<p class="empty-msg">No refund activity this month.</p>'
               : refundEntries.map(e => `
                   <div class="line-item ${e.amount < 0 ? 'text-red' : 'text-green'}">
-                    <span>${e.label}</span>
-                    <span>${fmt(e.amount)}</span>
-                  </div>
-                `).join('') + `
-                <div class="line-item total">
-                  <span>Net Refund Impact</span>
-                  <span>${fmt(totalRefundImpact)}</span>
-                </div>
-              `
-            }
+                    <span>${e.label}</span><span>${fmt(e.amount)}</span>
+                  </div>`).join('') + `
+                <div class="line-item total"><span>Net Refund Impact</span><span>${fmt(totalRefund)}</span></div>`}
           </div>
-
-          <!-- Bonuses Section -->
           <div class="summary-section">
             <h4>Weekly Bonuses (≥$40,000 net)</h4>
             ${bonuses.weeklyBreakdown.map(w => `
-              <div class="line-item ${w.qualifies ? '' : 'text-muted'}">
-                <span>
-                  Week ${w.week}: ${fmt(w.grossCash)} cash
-                  ${w.financingFees > 0 ? `− ${fmt(w.financingFees)} fees` : ''}
-                  ${w.refundAmt > 0 ? `− ${fmt(w.refundAmt)} refunds` : ''}
-                  = ${fmt(w.netCash)}
-                  ${w.qualifies ? '✓' : ''}
-                </span>
-                <span>${w.bonus > 0 ? fmt(w.bonus) : '—'}</span>
-              </div>
-            `).join('')}
-            ${c.type === 'setter' ? `
-              <div class="line-item ${bonuses.monthlyBonus > 0 ? '' : 'text-muted'}" style="margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb">
-                <span>Monthly Bonus (${fmt(bonuses.totalCash)} collected${bonuses.monthlyBonus === 0 ? `, need ${fmt(100000 - bonuses.totalCash)} more` : ''})</span>
-                <span>${bonuses.monthlyBonus > 0 ? fmt(bonuses.monthlyBonus) : '—'}</span>
-              </div>
-            ` : ''}
-            <div class="line-item total">
-              <span>Total Bonuses</span>
-              <span>${fmt(totalBonuses)}</span>
-            </div>
+              <div class="line-item ${w.qualifies?'':'text-muted'}">
+                <span>Week ${w.week}: ${fmt(w.gross)}${w.refundAmt>0?` − ${fmt(w.refundAmt)} refunds`:''} = ${fmt(w.net)} ${w.qualifies?'✓':''}</span>
+                <span>${w.bonus>0?fmt(w.bonus):'—'}</span>
+              </div>`).join('')}
+            ${c.type==='setter'?`
+              <div class="line-item ${bonuses.monthlyBonus>0?'':'text-muted'}" style="margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb">
+                <span>Monthly Bonus (${fmt(bonuses.totalCash)} collected${bonuses.monthlyBonus===0?`, need ${fmt(100000-bonuses.totalCash)} more`:''})</span>
+                <span>${bonuses.monthlyBonus>0?fmt(bonuses.monthlyBonus):'—'}</span>
+              </div>`:''}
+            <div class="line-item total"><span>Total Bonuses</span><span>${fmt(totalBonuses)}</span></div>
           </div>
         </div>
-
-        <!-- Final Pay Breakdown -->
         <div class="pay-breakdown">
-          <div class="line-item">
-            <span>Commission</span>
-            <span>${fmt(comm.total)}</span>
-          </div>
-          <div class="line-item text-red">
-            <span>Refund Deductions</span>
-            <span>${fmt(totalRefundImpact)}</span>
-          </div>
-          <div class="line-item">
-            <span>Bonuses</span>
-            <span>${fmt(totalBonuses)}</span>
-          </div>
-          <div class="line-item total">
-            <span>TOTAL PAY</span>
-            <span>${fmt(totalPay)}</span>
-          </div>
+          <div class="line-item"><span>Commission</span><span>${fmt(comm.total)}</span></div>
+          <div class="line-item text-red"><span>Refund Deductions</span><span>${fmt(totalRefund)}</span></div>
+          <div class="line-item"><span>Bonuses</span><span>${fmt(totalBonuses)}</span></div>
+          <div class="line-item total"><span>TOTAL PAY</span><span>${fmt(totalPay)}</span></div>
         </div>
-      </div>
-    `;
+      </div>`;
   }).join('');
 }
 
-// ========== MODALS ==========
+// ========== CRUD ==========
+function updateTransaction(id, field, value) {
+  const t = db.transactions.find(t => t.id === id);
+  if (t) { t[field] = value; saveDB(); }
+}
+function updateTransactionPerson(id, role, name) {
+  const t = db.transactions.find(t => t.id === id);
+  if (!t) return;
+  const contractor = findContractorByName(name);
+  if (role === 'closer') { t.closerName = name; t.closerId = contractor?.id || null; }
+  else { t.settterName = name; t.setterId = contractor?.id || null; }
+  saveDB();
+}
+function deleteTransaction(id) {
+  if (!confirm('Delete this transaction?')) return;
+  db.transactions = db.transactions.filter(t => t.id !== id);
+  saveDB(); renderEntry();
+}
+function saveNewTransaction() {
+  const p = 'nr-txn';
+  const transactionDate = document.getElementById(`${p}-date`)?.value;
+  const amountPaid = parseFloat(document.getElementById(`${p}-amount`)?.value) || 0;
+  if (!transactionDate || amountPaid === 0) { alert('Please enter a Transaction Date and Amount Paid.'); return; }
+  const closerName = document.getElementById(`${p}-closer`)?.value || '';
+  const setterName = document.getElementById(`${p}-setter`)?.value || '';
+  db.transactions.push({
+    id: genId(), transactionDate,
+    processor: document.getElementById(`${p}-processor`)?.value || '',
+    offering: document.getElementById(`${p}-offering`)?.value || '',
+    clientEmail: document.getElementById(`${p}-email`)?.value || '',
+    masterContract: document.getElementById(`${p}-contract`)?.value || '',
+    contractSaleDate: document.getElementById(`${p}-saledate`)?.value || '',
+    amountPaid,
+    commissionableAmount: parseFloat(document.getElementById(`${p}-commissionable`)?.value) || amountPaid,
+    refundStatusApproximation: document.getElementById(`${p}-refundstatus`)?.value || '',
+    closerName, closerId: findContractorByName(closerName)?.id || null,
+    settterName: setterName, setterId: findContractorByName(setterName)?.id || null,
+    depositThreshold: document.getElementById(`${p}-threshold`)?.value || 'Yes'
+  });
+  saveDB(); renderEntry();
+}
+function deleteRefund(id) {
+  if (!confirm('Delete this refund?')) return;
+  db.refunds = db.refunds.filter(r => r.id !== id);
+  saveDB(); renderEntry();
+}
+
+// ========== CONTRACTORS CRUD ==========
 function showModal(html) {
   document.getElementById('modal-body').innerHTML = html;
   document.getElementById('modal').classList.remove('hidden');
 }
-
-function closeModal() {
-  document.getElementById('modal').classList.add('hidden');
-}
-
+function closeModal() { document.getElementById('modal').classList.add('hidden'); }
 function showModal_addContractor() {
   showModal(`
     <h3>Add Contractor</h3>
     <form id="form-add-contractor">
-      <div class="form-group">
-        <label>Full Name</label>
-        <input type="text" id="new-name" required placeholder="e.g. John Smith">
-      </div>
-      <div class="form-group">
-        <label>Type</label>
-        <select id="new-type">
-          <option value="closer">Closer</option>
-          <option value="setter">Setter</option>
-        </select>
-      </div>
+      <div class="form-group"><label>Full Name</label><input type="text" id="new-name" required placeholder="e.g. John Smith"></div>
+      <div class="form-group"><label>Type</label><select id="new-type"><option value="closer">Closer</option><option value="setter">Setter</option></select></div>
       <div class="form-actions">
         <button type="button" class="btn-sm" onclick="closeModal()">Cancel</button>
         <button type="submit" class="btn-primary">Add Contractor</button>
       </div>
-    </form>
-  `);
+    </form>`);
   document.getElementById('form-add-contractor').addEventListener('submit', addContractor);
 }
-
-function showAddPayment(contractorId) {
-  const c = db.contractors.find(c => c.id === contractorId);
-  const isSetter = c.type === 'setter';
-  const today = new Date().toISOString().slice(0, 10);
-
-  showModal(`
-    <h3>Add Payment — ${c.name}</h3>
-    <form id="form-add-payment">
-      <div class="form-group">
-        <label>Date</label>
-        <input type="date" id="pay-date" required value="${today}">
-      </div>
-      <div class="form-group">
-        <label>Contract Value ($)</label>
-        <input type="number" id="pay-contract" required min="0" step="0.01" placeholder="0.00" oninput="updateDepositIndicator()">
-      </div>
-      <div class="form-group">
-        <label>Deposit Amount ($)</label>
-        <input type="number" id="pay-deposit" required min="0" step="0.01" placeholder="0.00" oninput="updateDepositIndicator()">
-        <div id="deposit-indicator" class="deposit-indicator" style="display:none;margin-top:6px"></div>
-      </div>
-      <div class="form-group">
-        <label>Cash Collected ($)</label>
-        <input type="number" id="pay-cash" required min="0" step="0.01" placeholder="0.00">
-      </div>
-      <div class="form-group">
-        <label>Financing Fee ($)</label>
-        <input type="number" id="pay-fee" required min="0" step="0.01" value="0">
-      </div>
-      ${isSetter ? `
-        <div class="checkbox-row">
-          <input type="checkbox" id="pay-weekend">
-          <label for="pay-weekend">Weekend Set</label>
-        </div>
-      ` : ''}
-      <div class="form-actions">
-        <button type="button" class="btn-sm" onclick="closeModal()">Cancel</button>
-        <button type="submit" class="btn-primary">Add Payment</button>
-      </div>
-    </form>
-  `);
-  document.getElementById('form-add-payment').addEventListener('submit', (e) => addPayment(e, contractorId, isSetter));
-}
-
-function updateDepositIndicator() {
-  const contract = parseFloat(document.getElementById('pay-contract')?.value) || 0;
-  const deposit = parseFloat(document.getElementById('pay-deposit')?.value) || 0;
-  const el = document.getElementById('deposit-indicator');
-  if (!el) return;
-
-  if (contract > 0) {
-    const pct = ((deposit / contract) * 100).toFixed(1);
-    const qualified = deposit / contract >= 0.25;
-    el.style.display = 'block';
-    el.className = `deposit-indicator ${qualified ? 'qualified' : 'not-qualified'}`;
-    el.textContent = `Deposit: ${pct}% — ${qualified ? '✓ Qualifies for commission' : '✗ Below 25% threshold — no commission calculated'}`;
-  } else {
-    el.style.display = 'none';
-  }
-}
-
-function showAddRefund(contractorId) {
-  const c = db.contractors.find(c => c.id === contractorId);
-  const defaultRate = c.type === 'closer' ? 10 : 2.20;
-  const today = new Date().toISOString().slice(0, 10);
-
-  showModal(`
-    <h3>Add Refund — ${c.name}</h3>
-    <form id="form-add-refund">
-      <div class="form-group">
-        <label>Description (customer/job name)</label>
-        <input type="text" id="ref-desc" required placeholder="e.g. John Doe - Job #1234">
-      </div>
-      <div class="form-group">
-        <label>Sale Amount ($) — the amount being refunded</label>
-        <input type="number" id="ref-amount" required min="0" step="0.01" placeholder="0.00">
-      </div>
-      <div class="form-group">
-        <label>Commission Rate (%)</label>
-        <input type="number" id="ref-rate" required min="0" step="0.01" value="${defaultRate}">
-        <div class="form-hint">Commission to withhold = Sale Amount × Rate</div>
-      </div>
-      <div class="form-group">
-        <label>Submitted Date</label>
-        <input type="date" id="ref-submitted" required value="${today}">
-      </div>
-      <div class="form-group">
-        <label>Initial Status</label>
-        <select id="ref-status">
-          <option value="ticket">Refund Ticket</option>
-          <option value="approved">Approved Refund</option>
-          <option value="processed">Processed</option>
-        </select>
-      </div>
-      <div class="form-actions">
-        <button type="button" class="btn-sm" onclick="closeModal()">Cancel</button>
-        <button type="submit" class="btn-primary">Add Refund</button>
-      </div>
-    </form>
-  `);
-  document.getElementById('form-add-refund').addEventListener('submit', (e) => addRefund(e, contractorId));
-}
-
-// ========== ACTIONS ==========
 function addContractor(e) {
   e.preventDefault();
-  db.contractors.push({
-    id: genId(),
-    name: document.getElementById('new-name').value.trim(),
-    type: document.getElementById('new-type').value
-  });
-  saveDB();
-  closeModal();
-  renderContractors();
+  db.contractors.push({ id: genId(), name: document.getElementById('new-name').value.trim(), type: document.getElementById('new-type').value });
+  saveDB(); closeModal(); renderContractors();
 }
-
 function deleteContractor(id) {
-  if (!confirm('Delete this contractor and ALL their payment/refund data?')) return;
+  if (!confirm('Delete this contractor and all their data?')) return;
   db.contractors = db.contractors.filter(c => c.id !== id);
-  db.payments = db.payments.filter(p => p.contractorId !== id);
-  db.refunds = db.refunds.filter(r => r.contractorId !== id);
-  saveDB();
-  renderContractors();
-}
-
-function addPayment(e, contractorId, isSetter) {
-  e.preventDefault();
-  db.payments.push({
-    id: genId(),
-    contractorId,
-    date: document.getElementById('pay-date').value,
-    contractValue: parseFloat(document.getElementById('pay-contract').value) || 0,
-    depositAmount: parseFloat(document.getElementById('pay-deposit').value) || 0,
-    cashCollected: parseFloat(document.getElementById('pay-cash').value) || 0,
-    financingFee: parseFloat(document.getElementById('pay-fee').value) || 0,
-    isWeekendSet: isSetter ? (document.getElementById('pay-weekend')?.checked ?? false) : false
+  db.transactions = db.transactions.map(t => {
+    if (t.closerId === id) { t.closerId = null; }
+    if (t.setterId === id) { t.setterId = null; }
+    return t;
   });
-  saveDB();
-  closeModal();
-  renderEntry();
-}
-
-function deletePayment(id) {
-  if (!confirm('Delete this payment?')) return;
-  db.payments = db.payments.filter(p => p.id !== id);
-  saveDB();
-  renderEntry();
-}
-
-function addRefund(e, contractorId) {
-  e.preventDefault();
-  const status = document.getElementById('ref-status').value;
-  const today = new Date().toISOString().slice(0, 10);
-  db.refunds.push({
-    id: genId(),
-    contractorId,
-    description: document.getElementById('ref-desc').value.trim(),
-    saleAmount: parseFloat(document.getElementById('ref-amount').value) || 0,
-    rate: parseFloat(document.getElementById('ref-rate').value) || 0,
-    status,
-    submittedDate: document.getElementById('ref-submitted').value,
-    approvedDate: status === 'approved' || status === 'processed' ? today : null,
-    processedDate: status === 'processed' ? today : null
+  db.refunds = db.refunds.map(r => {
+    if (r.closerId === id) r.closerId = null;
+    if (r.setterId === id) r.setterId = null;
+    return r;
   });
-  saveDB();
-  closeModal();
-  renderEntry();
-}
-
-function updateRefundStatus(id, newStatus) {
-  const refund = db.refunds.find(r => r.id === id);
-  if (!refund) return;
-  const today = new Date().toISOString().slice(0, 10);
-  refund.status = newStatus;
-  if ((newStatus === 'approved' || newStatus === 'processed') && !refund.approvedDate) {
-    refund.approvedDate = today;
-  }
-  if (newStatus === 'processed' && !refund.processedDate) {
-    refund.processedDate = today;
-  }
-  saveDB();
-}
-
-function deleteRefund(id) {
-  if (!confirm('Delete this refund entry?')) return;
-  db.refunds = db.refunds.filter(r => r.id !== id);
-  saveDB();
-  renderEntry();
+  saveDB(); renderContractors();
 }
 
 // ========== INIT ==========
@@ -1093,25 +756,20 @@ function initMonthSelectors() {
   ['entry', 'summary'].forEach(prefix => {
     const mSel = document.getElementById(`${prefix}-month`);
     const ySel = document.getElementById(`${prefix}-year`);
-
     MONTHS.forEach((m, i) => {
       const opt = document.createElement('option');
-      opt.value = i + 1;
-      opt.textContent = m;
+      opt.value = i + 1; opt.textContent = m;
       if (i + 1 === now.getMonth() + 1) opt.selected = true;
       mSel.appendChild(opt);
     });
-
     for (let y = 2024; y <= 2030; y++) {
       const opt = document.createElement('option');
-      opt.value = y;
-      opt.textContent = y;
+      opt.value = y; opt.textContent = y;
       if (y === now.getFullYear()) opt.selected = true;
       ySel.appendChild(opt);
     }
   });
 }
-
 function initTabs() {
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1123,23 +781,11 @@ function initTabs() {
     });
   });
 }
-
 document.addEventListener('DOMContentLoaded', () => {
-  loadDB();
-  initMonthSelectors();
-  initTabs();
-  renderContractors();
-  checkAuth();
-
+  loadDB(); initMonthSelectors(); initTabs(); renderContractors(); checkAuth();
   document.getElementById('btn-add-contractor').addEventListener('click', showModal_addContractor);
   document.getElementById('btn-calculate').addEventListener('click', renderSummary);
   document.getElementById('btn-close-modal').addEventListener('click', closeModal);
-
-  ['entry-month', 'entry-year'].forEach(id => {
-    document.getElementById(id).addEventListener('change', renderEntry);
-  });
-
-  document.getElementById('modal').addEventListener('click', e => {
-    if (e.target.id === 'modal') closeModal();
-  });
+  ['entry-month','entry-year'].forEach(id => document.getElementById(id).addEventListener('change', renderEntry));
+  document.getElementById('modal').addEventListener('click', e => { if (e.target.id === 'modal') closeModal(); });
 });

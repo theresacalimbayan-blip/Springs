@@ -492,4 +492,38 @@ select { cursor: pointer; }
   font-size: 13px;
   color: #3730a3;
   font-weight: 500;
+  flex-wrap: wrap;
+  gap: 12px;
 }
+
+.import-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.import-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #3730a3;
+  margin-right: 4px;
+}
+
+/* Refund status badges */
+.status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.badge-ticket { background: #fef3c7; color: #92400e; }
+.badge-approved { background: #dbeafe; color: #1d4ed8; }
+.badge-processed { background: #d1fae5; color: #065f46; }
+
+/* Refund row highlights */
+.approved-row td { background: #eff6ff !important; }
+.processed-row td { background: #f0fdf4 !important; }
