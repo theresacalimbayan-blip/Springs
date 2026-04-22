@@ -459,6 +459,7 @@ select { cursor: pointer; }
 }
 
 .spreadsheet .new-row td { background: #f0f9ff; }
+.spreadsheet .refund-row td { background: #fff9f9; }
 
 .toolbar-actions { display: flex; gap: 6px; align-items: center; }
 

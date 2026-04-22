@@ -374,142 +374,124 @@ function renderEntry() {
       </div>
     </div>`;
 
-  body.innerHTML = globalBanner + db.contractors.map(c => {
-    const isSetter = c.type === 'setter';
-    return `
+  body.innerHTML = globalBanner + db.contractors.map(c => `
     <div class="contractor-card">
       <div class="card-header">
         <h3>${c.name}</h3>
         <span class="badge ${c.type}">${c.type}</span>
       </div>
-
       <div class="card-section">
         <div class="section-toolbar">
-          <strong>Payments — ${MONTHS[month - 1]} ${year}</strong>
+          <strong>Transactions — ${MONTHS[month - 1]} ${year}</strong>
           <div class="toolbar-actions">
-            <button class="btn-sm" onclick="downloadPaymentTemplate(${isSetter})">Download Template</button>
+            <button class="btn-sm" onclick="downloadFullTemplate()">Download Template</button>
             <label class="btn-sm btn-primary" style="cursor:pointer">
               Import CSV
-              <input type="file" accept=".csv" style="display:none" onchange="importPaymentsCSV('${c.id}', ${isSetter}, event)">
+              <input type="file" accept=".csv" style="display:none" onchange="importFullSpreadsheet(event)">
             </label>
           </div>
         </div>
-        ${renderPaymentsTable(c, month, year)}
-      </div>
-
-      <div class="card-section">
-        <div class="section-toolbar">
-          <strong>Refunds (All)</strong>
-          <div class="toolbar-actions">
-            <button class="btn-sm" onclick="downloadRefundTemplate()">Download Template</button>
-            <label class="btn-sm btn-primary" style="cursor:pointer">
-              Import CSV
-              <input type="file" accept=".csv" style="display:none" onchange="importRefundsCSV('${c.id}', event)">
-            </label>
-          </div>
-        </div>
-        ${renderRefundsTable(c)}
+        ${renderTransactionsTable(c, month, year)}
       </div>
     </div>
-  `}).join('');
+  `).join('');
 }
 
-function renderPaymentsTable(contractor, month, year) {
-  const payments = getPaymentsForMonth(contractor.id, month, year);
+function renderTransactionsTable(contractor, month, year) {
   const isSetter = contractor.type === 'setter';
   const nr = `nr-${contractor.id}`;
   const today = new Date().toISOString().slice(0, 10);
 
-  const existingRows = payments.map(p => {
-    const depPct = getDepositPct(p).toFixed(1);
-    const q = isQualified(p);
-    return `
-      <tr>
-        <td><input class="ss-input" type="date" value="${p.date}" onchange="updatePayment('${p.id}','date',this.value)"></td>
-        <td><input class="ss-input" type="number" value="${p.contractValue}" min="0" step="0.01" onchange="updatePayment('${p.id}','contractValue',this.value)"></td>
-        <td><input class="ss-input" type="number" value="${p.depositAmount}" min="0" step="0.01" onchange="updatePayment('${p.id}','depositAmount',this.value)"></td>
-        <td id="dep-${p.id}" class="${q ? 'text-green' : 'text-red'}" style="white-space:nowrap">${depPct}% ${q ? '✓' : '✗'}</td>
-        <td><input class="ss-input" type="number" value="${p.cashCollected}" min="0" step="0.01" onchange="updatePayment('${p.id}','cashCollected',this.value)"></td>
-        <td><input class="ss-input" type="number" value="${p.financingFee}" min="0" step="0.01" onchange="updatePayment('${p.id}','financingFee',this.value)"></td>
-        ${isSetter ? `<td style="text-align:center"><input type="checkbox" ${p.isWeekendSet ? 'checked' : ''} onchange="updatePayment('${p.id}','isWeekendSet',this.checked)"></td>` : ''}
-        <td><button class="btn-sm btn-danger" onclick="deletePayment('${p.id}')">Del</button></td>
-      </tr>`;
+  const payments = getPaymentsForMonth(contractor.id, month, year);
+  const refunds = db.refunds.filter(r => {
+    if (r.contractorId !== contractor.id) return false;
+    const d = new Date(r.submittedDate + 'T00:00:00');
+    return d.getMonth() + 1 === month && d.getFullYear() === year;
+  });
+
+  const allRows = [
+    ...payments.map(p => ({ ...p, _type: 'payment' })),
+    ...refunds.map(r => ({ ...r, _type: 'refund', date: r.submittedDate }))
+  ].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+
+  const existingRows = allRows.map(row => {
+    if (row._type === 'payment') {
+      const depLabel = 'depositThresholdMet' in row ? (row.depositThresholdMet ? 'Yes' : 'No') : (isQualified(row) ? 'Yes' : 'No');
+      return `
+        <tr>
+          <td><input class="ss-input" type="date" value="${row.date||''}" onchange="updatePayment('${row.id}','date',this.value)"></td>
+          <td><input class="ss-input" type="text" value="${row.processor||''}" onchange="updatePayment('${row.id}','processor',this.value)" placeholder="—"></td>
+          <td><input class="ss-input" type="text" value="${row.offering||''}" onchange="updatePayment('${row.id}','offering',this.value)" placeholder="—"></td>
+          <td><input class="ss-input" type="text" value="${row.clientEmail||''}" onchange="updatePayment('${row.id}','clientEmail',this.value)" placeholder="—"></td>
+          <td><input class="ss-input" type="text" value="${row.masterContract||''}" onchange="updatePayment('${row.id}','masterContract',this.value)" placeholder="—"></td>
+          <td><input class="ss-input" type="date" value="${row.contractSaleDate||''}" onchange="updatePayment('${row.id}','contractSaleDate',this.value)"></td>
+          <td><input class="ss-input" type="number" value="${row.cashCollected||0}" step="0.01" onchange="updatePayment('${row.id}','cashCollected',this.value)"></td>
+          <td><input class="ss-input" type="number" value="${row.commissionableAmount??row.cashCollected??0}" step="0.01" onchange="updatePayment('${row.id}','commissionableAmount',this.value)"></td>
+          <td class="text-muted">—</td>
+          <td>
+            <select onchange="updatePayment('${row.id}','depositThresholdMet',this.value==='Yes')">
+              <option ${depLabel==='Yes'?'selected':''}>Yes</option>
+              <option ${depLabel==='No'?'selected':''}>No</option>
+            </select>
+          </td>
+          ${isSetter ? `<td style="text-align:center"><input type="checkbox" ${row.isWeekendSet?'checked':''} onchange="updatePayment('${row.id}','isWeekendSet',this.checked)"></td>` : ''}
+          <td><button class="btn-sm btn-danger" onclick="deletePayment('${row.id}')">Del</button></td>
+        </tr>`;
+    } else {
+      return `
+        <tr class="refund-row">
+          <td><input class="ss-input" type="date" value="${row.submittedDate||''}" onchange="updateRefundField('${row.id}','submittedDate',this.value)"></td>
+          <td class="text-muted">—</td>
+          <td class="text-muted">—</td>
+          <td><input class="ss-input" type="text" value="${row.clientEmail||''}" onchange="updateRefundField('${row.id}','clientEmail',this.value)" placeholder="—"></td>
+          <td><input class="ss-input" type="text" value="${row.description||''}" onchange="updateRefundField('${row.id}','description',this.value)"></td>
+          <td class="text-muted">—</td>
+          <td class="text-red"><input class="ss-input" type="number" value="${-(row.saleAmount||0)}" step="0.01" onchange="updateRefundField('${row.id}','saleAmount',Math.abs(parseFloat(this.value)||0))"></td>
+          <td class="text-red">${fmt(-(row.saleAmount||0))}</td>
+          <td>
+            <select onchange="updateRefundStatus('${row.id}',this.value)">
+              <option value="ticket" ${row.status==='ticket'?'selected':''}>Refund Ticket</option>
+              <option value="approved" ${row.status==='approved'?'selected':''}>Approved</option>
+              <option value="processed" ${row.status==='processed'?'selected':''}>Processed</option>
+            </select>
+          </td>
+          <td class="text-muted">—</td>
+          ${isSetter ? '<td class="text-muted">—</td>' : ''}
+          <td><button class="btn-sm btn-danger" onclick="deleteRefund('${row.id}')">Del</button></td>
+        </tr>`;
+    }
   }).join('');
 
   const newRow = `
     <tr class="new-row">
       <td><input class="ss-input" type="date" id="${nr}-date" value="${today}"></td>
-      <td><input class="ss-input" type="number" id="${nr}-contract" min="0" step="0.01" placeholder="0.00" oninput="refreshNewRowDeposit('${contractor.id}')"></td>
-      <td><input class="ss-input" type="number" id="${nr}-deposit" min="0" step="0.01" placeholder="0.00" oninput="refreshNewRowDeposit('${contractor.id}')"></td>
-      <td id="${nr}-dep" class="text-muted">—</td>
-      <td><input class="ss-input" type="number" id="${nr}-cash" min="0" step="0.01" placeholder="0.00"></td>
-      <td><input class="ss-input" type="number" id="${nr}-fee" min="0" step="0.01" value="0"></td>
+      <td><input class="ss-input" type="text" id="${nr}-processor" placeholder="Processor"></td>
+      <td><input class="ss-input" type="text" id="${nr}-offering" placeholder="Offering"></td>
+      <td><input class="ss-input" type="text" id="${nr}-email" placeholder="Master Email"></td>
+      <td><input class="ss-input" type="text" id="${nr}-contract" placeholder="Master Contract"></td>
+      <td><input class="ss-input" type="date" id="${nr}-saledate"></td>
+      <td><input class="ss-input" type="number" id="${nr}-amount" step="0.01" placeholder="Amount (- for refund)"></td>
+      <td><input class="ss-input" type="number" id="${nr}-commissionable" step="0.01" placeholder="Commissionable"></td>
+      <td class="text-muted">auto</td>
+      <td>
+        <select id="${nr}-threshold">
+          <option value="Yes">Yes</option>
+          <option value="No">No</option>
+        </select>
+      </td>
       ${isSetter ? `<td style="text-align:center"><input type="checkbox" id="${nr}-weekend"></td>` : ''}
-      <td><button class="btn-sm btn-primary" onclick="saveNewPayment('${contractor.id}',${isSetter})">+ Add</button></td>
+      <td><button class="btn-sm btn-primary" onclick="saveNewTransaction('${contractor.id}',${isSetter})">+ Add</button></td>
     </tr>`;
 
   return `
     <table class="data-table spreadsheet">
       <thead>
         <tr>
-          <th>Date</th><th>Contract Value</th><th>Deposit</th><th>Dep %</th>
-          <th>Cash Collected</th><th>Financing Fee</th>
+          <th>Transaction Date</th><th>Processor</th><th>Offering</th>
+          <th>Master Email</th><th>Master Contract</th><th>Contract Sale Date</th>
+          <th>Amount Paid</th><th>Commissionable Amount</th>
+          <th>Refund Status Approx.</th><th>Deposit Threshold</th>
           ${isSetter ? '<th>Weekend?</th>' : ''}<th></th>
-        </tr>
-      </thead>
-      <tbody>${existingRows}${newRow}</tbody>
-    </table>`;
-}
-
-function renderRefundsTable(contractor) {
-  const refunds = db.refunds.filter(r => r.contractorId === contractor.id);
-  const rr = `rr-${contractor.id}`;
-  const today = new Date().toISOString().slice(0, 10);
-
-  const existingRows = refunds.map(r => `
-    <tr>
-      <td><input class="ss-input" type="text" value="${r.description}" onchange="updateRefundField('${r.id}','description',this.value)"></td>
-      <td><input class="ss-input" type="number" value="${r.saleAmount}" min="0" step="0.01" onchange="updateRefundField('${r.id}','saleAmount',this.value)"></td>
-      <td><input class="ss-input" type="number" value="${r.rate}" min="0" step="0.01" onchange="updateRefundField('${r.id}','rate',this.value)" style="width:60px"></td>
-      <td class="text-red">${fmt(r.saleAmount * r.rate / 100)}</td>
-      <td>
-        <select onchange="updateRefundStatus('${r.id}',this.value)">
-          <option value="ticket" ${r.status==='ticket'?'selected':''}>Refund Ticket</option>
-          <option value="approved" ${r.status==='approved'?'selected':''}>Approved</option>
-          <option value="processed" ${r.status==='processed'?'selected':''}>Processed</option>
-        </select>
-      </td>
-      <td>${r.submittedDate}</td>
-      <td>${r.approvedDate || '—'}</td>
-      <td>${r.processedDate || '—'}</td>
-      <td><button class="btn-sm btn-danger" onclick="deleteRefund('${r.id}')">Del</button></td>
-    </tr>`).join('');
-
-  const newRow = `
-    <tr class="new-row">
-      <td><input class="ss-input" type="text" id="${rr}-desc" placeholder="Customer / Job name"></td>
-      <td><input class="ss-input" type="number" id="${rr}-amount" min="0" step="0.01" placeholder="0.00"></td>
-      <td><input class="ss-input" type="number" id="${rr}-rate" min="0" step="0.01" value="${contractor.type==='closer'?10:2.20}" style="width:60px"></td>
-      <td class="text-muted">—</td>
-      <td>
-        <select id="${rr}-status">
-          <option value="ticket">Refund Ticket</option>
-          <option value="approved">Approved</option>
-          <option value="processed">Processed</option>
-        </select>
-      </td>
-      <td><input class="ss-input" type="date" id="${rr}-submitted" value="${today}"></td>
-      <td>—</td><td>—</td>
-      <td><button class="btn-sm btn-primary" onclick="saveNewRefundRow('${contractor.id}')">+ Add</button></td>
-    </tr>`;
-
-  return `
-    <table class="data-table spreadsheet">
-      <thead>
-        <tr>
-          <th>Description</th><th>Sale Amount</th><th>Rate %</th>
-          <th>Commission Withheld</th><th>Status</th>
-          <th>Submitted</th><th>Approved</th><th>Processed</th><th></th>
         </tr>
       </thead>
       <tbody>${existingRows}${newRow}</tbody>
@@ -520,50 +502,11 @@ function renderRefundsTable(contractor) {
 function updatePayment(id, field, value) {
   const p = db.payments.find(p => p.id === id);
   if (!p) return;
-  const numFields = ['contractValue','depositAmount','cashCollected','financingFee'];
-  p[field] = numFields.includes(field) ? (parseFloat(value) || 0) : (field === 'isWeekendSet' ? value : value);
+  const numFields = ['cashCollected','commissionableAmount','financingFee','contractValue','depositAmount'];
+  if (numFields.includes(field)) p[field] = parseFloat(value) || 0;
+  else if (field === 'isWeekendSet' || field === 'depositThresholdMet') p[field] = value === true || value === 'true';
+  else p[field] = value;
   saveDB();
-  const depCell = document.getElementById(`dep-${id}`);
-  if (depCell) {
-    const pct = getDepositPct(p).toFixed(1);
-    const q = isQualified(p);
-    depCell.className = q ? 'text-green' : 'text-red';
-    depCell.textContent = `${pct}% ${q ? '✓' : '✗'}`;
-  }
-}
-
-function refreshNewRowDeposit(contractorId) {
-  const prefix = `nr-${contractorId}`;
-  const contract = parseFloat(document.getElementById(`${prefix}-contract`)?.value) || 0;
-  const deposit = parseFloat(document.getElementById(`${prefix}-deposit`)?.value) || 0;
-  const el = document.getElementById(`${prefix}-dep`);
-  if (!el) return;
-  if (contract > 0) {
-    const pct = ((deposit / contract) * 100).toFixed(1);
-    const q = deposit / contract >= 0.25;
-    el.className = q ? 'text-green' : 'text-red';
-    el.textContent = `${pct}% ${q ? '✓' : '✗'}`;
-  } else {
-    el.className = 'text-muted';
-    el.textContent = '—';
-  }
-}
-
-function saveNewPayment(contractorId, isSetter) {
-  const p = `nr-${contractorId}`;
-  const date = document.getElementById(`${p}-date`)?.value;
-  const contractValue = parseFloat(document.getElementById(`${p}-contract`)?.value) || 0;
-  if (!date || contractValue <= 0) { alert('Please enter at least a date and contract value.'); return; }
-  db.payments.push({
-    id: genId(), contractorId, date,
-    contractValue,
-    depositAmount: parseFloat(document.getElementById(`${p}-deposit`)?.value) || 0,
-    cashCollected: parseFloat(document.getElementById(`${p}-cash`)?.value) || 0,
-    financingFee: parseFloat(document.getElementById(`${p}-fee`)?.value) || 0,
-    isWeekendSet: isSetter ? (document.getElementById(`${p}-weekend`)?.checked ?? false) : false
-  });
-  saveDB();
-  renderEntry();
 }
 
 function updateRefundField(id, field, value) {
@@ -573,20 +516,40 @@ function updateRefundField(id, field, value) {
   saveDB();
 }
 
-function saveNewRefundRow(contractorId) {
-  const p = `rr-${contractorId}`;
-  const description = document.getElementById(`${p}-desc`)?.value?.trim();
-  const saleAmount = parseFloat(document.getElementById(`${p}-amount`)?.value) || 0;
-  const rate = parseFloat(document.getElementById(`${p}-rate`)?.value) || 0;
-  const status = document.getElementById(`${p}-status`)?.value || 'ticket';
-  const submittedDate = document.getElementById(`${p}-submitted`)?.value;
-  if (!description || !submittedDate || saleAmount <= 0) { alert('Please fill in description, sale amount, and submitted date.'); return; }
+function saveNewTransaction(contractorId, isSetter) {
+  const p = `nr-${contractorId}`;
+  const date = document.getElementById(`${p}-date`)?.value;
+  const amountPaid = parseFloat(document.getElementById(`${p}-amount`)?.value) || 0;
+  if (!date || amountPaid === 0) { alert('Please enter a date and amount.'); return; }
+  const contractor = db.contractors.find(c => c.id === contractorId);
+  const processor = document.getElementById(`${p}-processor`)?.value || '';
+  const offering = document.getElementById(`${p}-offering`)?.value || '';
+  const clientEmail = document.getElementById(`${p}-email`)?.value || '';
+  const masterContract = document.getElementById(`${p}-contract`)?.value || '';
+  const contractSaleDate = document.getElementById(`${p}-saledate`)?.value || '';
+  const commissionable = parseFloat(document.getElementById(`${p}-commissionable`)?.value) || Math.abs(amountPaid);
+  const depositThresholdMet = document.getElementById(`${p}-threshold`)?.value === 'Yes';
+  const isWeekendSet = isSetter ? (document.getElementById(`${p}-weekend`)?.checked ?? false) : false;
   const today = new Date().toISOString().slice(0, 10);
-  db.refunds.push({
-    id: genId(), contractorId, description, saleAmount, rate, status, submittedDate,
-    approvedDate: (status === 'approved' || status === 'processed') ? today : null,
-    processedDate: status === 'processed' ? today : null
-  });
+  if (amountPaid < 0) {
+    db.refunds.push({
+      id: genId(), contractorId,
+      description: masterContract || clientEmail || `Refund ${date}`,
+      saleAmount: Math.abs(amountPaid),
+      rate: contractor.type === 'closer' ? 10 : 2.20,
+      status: 'ticket', submittedDate: date,
+      approvedDate: null, processedDate: null,
+      clientEmail, masterContract, processor, offering
+    });
+  } else {
+    db.payments.push({
+      id: genId(), contractorId, date,
+      cashCollected: amountPaid, commissionableAmount: commissionable,
+      depositThresholdMet, contractValue: 0, depositAmount: 0,
+      financingFee: 0, isWeekendSet,
+      processor, offering, clientEmail, masterContract, contractSaleDate
+    });
+  }
   saveDB();
   renderEntry();
 }
