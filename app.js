@@ -3,6 +3,115 @@
 const MONTHS = ['January','February','March','April','May','June',
                 'July','August','September','October','November','December'];
 
+// ========== AUTH ==========
+const PASS_KEY = 'springs-pass-hash';
+
+async function hashPassword(password) {
+  const buf = new TextEncoder().encode(password);
+  const hash = await crypto.subtle.digest('SHA-256', buf);
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function showLockPanel(panel) {
+  document.getElementById('lock-setup').classList.add('hidden');
+  document.getElementById('lock-login').classList.add('hidden');
+  document.getElementById(panel).classList.remove('hidden');
+}
+
+function showLockError(elId, msg) {
+  const el = document.getElementById(elId);
+  el.textContent = msg;
+  el.classList.remove('hidden');
+  setTimeout(() => el.classList.add('hidden'), 3000);
+}
+
+function hideLockScreen() {
+  document.getElementById('lock-screen').classList.add('hidden');
+  document.getElementById('app').classList.remove('hidden');
+}
+
+function lockApp() {
+  sessionStorage.removeItem('springs-unlocked');
+  document.getElementById('app').classList.add('hidden');
+  document.getElementById('lock-screen').classList.remove('hidden');
+  document.getElementById('login-password').value = '';
+  showLockPanel('lock-login');
+}
+
+async function setupPassword() {
+  const password = document.getElementById('setup-password').value;
+  const confirm = document.getElementById('setup-confirm').value;
+  if (password.length < 4) { showLockError('lock-error', 'Password must be at least 4 characters.'); return; }
+  if (password !== confirm) { showLockError('lock-error', 'Passwords do not match.'); return; }
+  const hash = await hashPassword(password);
+  localStorage.setItem(PASS_KEY, hash);
+  sessionStorage.setItem('springs-unlocked', '1');
+  hideLockScreen();
+}
+
+async function verifyPassword() {
+  const password = document.getElementById('login-password').value;
+  const hash = await hashPassword(password);
+  if (hash === localStorage.getItem(PASS_KEY)) {
+    sessionStorage.setItem('springs-unlocked', '1');
+    hideLockScreen();
+  } else {
+    showLockError('lock-error-login', 'Incorrect password. Please try again.');
+    document.getElementById('login-password').value = '';
+  }
+}
+
+function checkAuth() {
+  if (sessionStorage.getItem('springs-unlocked')) { hideLockScreen(); return; }
+  const hasPassword = !!localStorage.getItem(PASS_KEY);
+  showLockPanel(hasPassword ? 'lock-login' : 'lock-setup');
+}
+
+// Allow Enter key on password fields
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  if (document.getElementById('lock-login') && !document.getElementById('lock-login').classList.contains('hidden')) verifyPassword();
+  if (document.getElementById('lock-setup') && !document.getElementById('lock-setup').classList.contains('hidden')) setupPassword();
+});
+
+// ========== EXPORT / IMPORT ==========
+function exportData() {
+  const date = new Date().toISOString().slice(0, 10);
+  const blob = new Blob([JSON.stringify(db, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `springs-payroll-backup-${date}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function importData(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const imported = JSON.parse(e.target.result);
+      if (!imported.contractors || !imported.payments || !imported.refunds) {
+        alert('Invalid backup file. Please use a file exported from Springs Payroll.');
+        return;
+      }
+      if (confirm(`This will replace all current data with the backup from ${file.name}. Continue?`)) {
+        db = imported;
+        saveDB();
+        renderContractors();
+        renderEntry();
+        alert('Data imported successfully!');
+      }
+    } catch {
+      alert('Could not read the file. Make sure it is a valid Springs Payroll backup.');
+    }
+    event.target.value = '';
+  };
+  reader.readAsText(file);
+}
+
 // ========== DATA LAYER ==========
 let db = { contractors: [], payments: [], refunds: [] };
 
@@ -774,6 +883,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initMonthSelectors();
   initTabs();
   renderContractors();
+  checkAuth();
 
   document.getElementById('btn-add-contractor').addEventListener('click', showModal_addContractor);
   document.getElementById('btn-calculate').addEventListener('click', renderSummary);

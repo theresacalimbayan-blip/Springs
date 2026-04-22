@@ -7,7 +7,33 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div id="app">
+
+<!-- Lock Screen -->
+<div id="lock-screen">
+  <div class="lock-box">
+    <div class="lock-logo">🔒</div>
+    <h2>Springs Payroll</h2>
+
+    <!-- Setup (first time) -->
+    <div id="lock-setup" class="lock-panel hidden">
+      <p>Create a password to protect your payroll data.</p>
+      <input type="password" id="setup-password" placeholder="Create password (min 4 characters)" autocomplete="new-password">
+      <input type="password" id="setup-confirm" placeholder="Confirm password" autocomplete="new-password">
+      <div id="lock-error" class="lock-error hidden"></div>
+      <button class="btn-primary" onclick="setupPassword()">Set Password</button>
+    </div>
+
+    <!-- Login -->
+    <div id="lock-login" class="lock-panel hidden">
+      <p>Enter your password to access payroll data.</p>
+      <input type="password" id="login-password" placeholder="Password" autocomplete="current-password">
+      <div id="lock-error-login" class="lock-error hidden"></div>
+      <button class="btn-primary" onclick="verifyPassword()">Unlock</button>
+    </div>
+  </div>
+</div>
+
+<div id="app" class="hidden">
   <header>
     <h1>Springs Payroll</h1>
     <nav>
@@ -15,6 +41,14 @@
       <button class="tab-btn" data-tab="entry">Payroll Entry</button>
       <button class="tab-btn" data-tab="summary">Summary</button>
     </nav>
+    <div class="header-actions">
+      <button class="btn-header" onclick="exportData()" title="Save a backup file to your computer">Export Backup</button>
+      <label class="btn-header" title="Load data from a backup file">
+        Import Backup
+        <input type="file" id="import-file" accept=".json" onchange="importData(event)" style="display:none">
+      </label>
+      <button class="btn-header btn-lock" onclick="lockApp()" title="Lock the app">🔒 Lock</button>
+    </div>
   </header>
 
   <!-- Contractors Tab -->
@@ -55,6 +89,7 @@
     </div>
     <div id="summary-body"></div>
   </div>
+</div>
 </div>
 
 <!-- Modal -->
