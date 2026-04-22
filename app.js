@@ -416,6 +416,35 @@ function importRefunds(event) {
   reader.readAsText(file);
 }
 
+// ========== IMPORT: CONTRACTORS ==========
+function downloadContractorsTemplate() {
+  downloadCSV('Name,Type\nJohn Smith,closer\nJane Doe,setter\n', 'springs-contractors-template.csv');
+}
+function importContractors(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const { rows } = parseCSV(e.target.result);
+    if (!rows.length) { alert('No data found.'); return; }
+    let added = 0; const errors = [];
+    rows.forEach((row, i) => {
+      const name = (col(row, 'Name', 'name') || '').trim();
+      const type = (col(row, 'Type', 'type') || '').toLowerCase().trim();
+      if (!name) { errors.push(`Row ${i + 2}: missing Name`); return; }
+      if (type !== 'closer' && type !== 'setter') { errors.push(`Row ${i + 2}: Type must be "closer" or "setter" (got "${type}")`); return; }
+      const duplicate = db.contractors.some(c => c.name.toLowerCase() === name.toLowerCase());
+      if (duplicate) { errors.push(`Row ${i + 2}: "${name}" already exists, skipped`); return; }
+      db.contractors.push({ id: genId(), name, type });
+      added++;
+    });
+    saveDB(); renderContractors();
+    alert(`Added ${added} contractor(s).${errors.length ? '\n\nNotes:\n' + errors.join('\n') : ''}`);
+    event.target.value = '';
+  };
+  reader.readAsText(file);
+}
+
 // ========== RENDER CONTRACTORS ==========
 function renderContractors() {
   const tbody = document.getElementById('contractors-tbody');

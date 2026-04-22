@@ -55,7 +55,13 @@
   <div id="tab-contractors" class="tab active">
     <div class="toolbar">
       <h2>Contractors</h2>
-      <button id="btn-add-contractor" class="btn-primary">+ Add Contractor</button>
+      <div class="toolbar-actions">
+        <button class="btn-sm" onclick="downloadContractorsTemplate()">Template</button>
+        <label class="btn-sm" style="cursor:pointer">Import CSV
+          <input type="file" accept=".csv" style="display:none" onchange="importContractors(event)">
+        </label>
+        <button id="btn-add-contractor" class="btn-primary">+ Add Contractor</button>
+      </div>
     </div>
     <table class="data-table">
       <thead>
