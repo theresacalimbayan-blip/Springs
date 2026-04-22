@@ -197,6 +197,7 @@ nav { display: flex; gap: 4px; }
 
 .badge.closer { background: #dbeafe; color: #1d4ed8; }
 .badge.setter { background: #d1fae5; color: #065f46; }
+.badge.both { background: #ede9fe; color: #6d28d9; }
 
 /* Contractor Card (Entry tab) */
 .contractor-card {

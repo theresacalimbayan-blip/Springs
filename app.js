@@ -151,26 +151,35 @@ function getWeekOfMonth(dateStr) {
 }
 
 // ========== CALCULATIONS ==========
-function calcCommission(contractor, month, year) {
+function calcCloserCommission(id, month, year) {
   const all = getTransactionsForMonth(month, year);
+  const mine = all.filter(t => t.closerId === id);
+  const totalCash = mine.reduce((s, t) => s + (t.amountPaid || 0), 0);
+  const qualifiedCash = mine.filter(t => (t.depositThreshold || '').toLowerCase() === 'yes')
+    .reduce((s, t) => s + (t.commissionableAmount || t.amountPaid || 0), 0);
+  const base = qualifiedCash * 0.10;
+  const bumpEligible = totalCash >= 150000;
+  const bump = bumpEligible ? totalCash * 0.025 : 0;
+  return { base, bump, bumpEligible, total: base + bump, totalCash, qualifiedCash, towardsThreshold: Math.max(0, 150000 - totalCash) };
+}
 
-  if (contractor.type === 'closer') {
-    const mine = all.filter(t => t.closerId === contractor.id);
-    const totalCash = mine.reduce((s, t) => s + (t.amountPaid || 0), 0);
-    const qualifiedCash = mine.filter(t => (t.depositThreshold || '').toLowerCase() === 'yes')
-      .reduce((s, t) => s + (t.commissionableAmount || t.amountPaid || 0), 0);
-    const base = qualifiedCash * 0.10;
-    const bumpEligible = totalCash >= 150000;
-    const bump = bumpEligible ? totalCash * 0.025 : 0;
-    return { type: 'closer', base, bump, bumpEligible, total: base + bump, totalCash, qualifiedCash, towardsThreshold: Math.max(0, 150000 - totalCash) };
-  } else {
-    const mine = all.filter(t => t.setterId === contractor.id);
-    const qualified = mine.filter(t => (t.depositThreshold || '').toLowerCase() === 'yes');
-    const regularCash = qualified.filter(t => !isWeekendContract(t.masterContract)).reduce((s, t) => s + (t.commissionableAmount || t.amountPaid || 0), 0);
-    const weekendCash = qualified.filter(t => isWeekendContract(t.masterContract)).reduce((s, t) => s + (t.commissionableAmount || t.amountPaid || 0), 0);
-    const totalCash = mine.reduce((s, t) => s + (t.amountPaid || 0), 0);
-    return { type: 'setter', regularCash, weekendCash, totalCash, regularComm: regularCash * 0.022, weekendComm: weekendCash * 0.03, total: regularCash * 0.022 + weekendCash * 0.03 };
-  }
+function calcSetterCommission(id, month, year) {
+  const all = getTransactionsForMonth(month, year);
+  const mine = all.filter(t => t.setterId === id);
+  const qualified = mine.filter(t => (t.depositThreshold || '').toLowerCase() === 'yes');
+  const regularCash = qualified.filter(t => !isWeekendContract(t.masterContract)).reduce((s, t) => s + (t.commissionableAmount || t.amountPaid || 0), 0);
+  const weekendCash = qualified.filter(t => isWeekendContract(t.masterContract)).reduce((s, t) => s + (t.commissionableAmount || t.amountPaid || 0), 0);
+  const totalCash = mine.reduce((s, t) => s + (t.amountPaid || 0), 0);
+  return { regularCash, weekendCash, totalCash, regularComm: regularCash * 0.022, weekendComm: weekendCash * 0.03, total: regularCash * 0.022 + weekendCash * 0.03 };
+}
+
+function calcCommission(contractor, month, year) {
+  if (contractor.type === 'closer') return { type: 'closer', ...calcCloserCommission(contractor.id, month, year) };
+  if (contractor.type === 'setter') return { type: 'setter', ...calcSetterCommission(contractor.id, month, year) };
+  // both
+  const closer = calcCloserCommission(contractor.id, month, year);
+  const setter = calcSetterCommission(contractor.id, month, year);
+  return { type: 'both', closer, setter, total: closer.total + setter.total };
 }
 
 function getRefundDeductionsForMonth(contractor, month, year) {
@@ -186,7 +195,9 @@ function getRefundDeductionsForMonth(contractor, month, year) {
     const approveDate = parseDate(r.approveDate);
     const transDate = parseDate(r.transactionDate);
     const weekend = isWeekendContract(r.masterContract);
-    const rate = contractor.type === 'closer' ? 0.10 : (weekend ? 0.03 : 0.022);
+    // Use role on THIS refund to determine rate (handles "both" correctly)
+    const isCloserOnRefund = r.closerId === contractor.id;
+    const rate = isCloserOnRefund ? 0.10 : (weekend ? 0.03 : 0.022);
     const commission = (r.amount || 0) * rate;
     const desc = r.clientName || r.masterContract || 'Refund';
 
@@ -204,15 +215,17 @@ function getRefundDeductionsForMonth(contractor, month, year) {
   return entries;
 }
 
-function calcBonuses(contractor, month, year) {
+function calcBonusesForRole(id, role, month, year) {
   const all = getTransactionsForMonth(month, year);
-  const mine = all.filter(t => contractor.type === 'closer' ? t.closerId === contractor.id : t.setterId === contractor.id);
+  const mine = all.filter(t => role === 'closer' ? t.closerId === id : t.setterId === id);
   const monthStart = new Date(year, month - 1, 1);
   const monthEnd = new Date(year, month, 0);
   const nextDay5 = new Date(year, month, 5);
 
-  // Pre-treatment refunds (all statuses) for bonus deduction
-  const myRefunds = db.refunds.filter(r => (r.closerId === contractor.id || r.setterId === contractor.id) && (r.refundTypeCategory || '').toLowerCase().includes('pre'));
+  const myRefunds = db.refunds.filter(r => {
+    const onThisRole = role === 'closer' ? r.closerId === id : r.setterId === id;
+    return onThisRole && (r.refundTypeCategory || '').toLowerCase().includes('pre');
+  });
 
   const byWeek = { 1: [], 2: [], 3: [], 4: [] };
   mine.forEach(t => { const w = getWeekOfMonth(t.transactionDate); byWeek[w].push(t); });
@@ -232,18 +245,27 @@ function calcBonuses(contractor, month, year) {
     const refundAmt = refundsByWeek[w];
     const net = gross - refundAmt;
     const qualifies = net >= 40000;
-    const bonus = qualifies ? (contractor.type === 'closer' ? 1000 : 500) : 0;
+    const bonus = qualifies ? (role === 'closer' ? 1000 : 500) : 0;
     totalWeeklyBonus += bonus;
     weeklyBreakdown.push({ week: w, gross, refundAmt, net, qualifies, bonus });
   }
 
   let monthlyBonus = 0;
-  if (contractor.type === 'setter') {
+  if (role === 'setter') {
     const totalCash = mine.reduce((s, t) => s + (t.amountPaid || 0), 0);
     if (totalCash >= 100000) monthlyBonus = 1000;
     return { weeklyBreakdown, totalWeeklyBonus, monthlyBonus, totalCash };
   }
   return { weeklyBreakdown, totalWeeklyBonus, monthlyBonus };
+}
+
+function calcBonuses(contractor, month, year) {
+  if (contractor.type === 'both') {
+    const closer = calcBonusesForRole(contractor.id, 'closer', month, year);
+    const setter = calcBonusesForRole(contractor.id, 'setter', month, year);
+    return { type: 'both', closer, setter, totalWeeklyBonus: closer.totalWeeklyBonus + setter.totalWeeklyBonus, monthlyBonus: setter.monthlyBonus };
+  }
+  return calcBonusesForRole(contractor.id, contractor.type, month, year);
 }
 
 // ========== CSV PARSER ==========
@@ -418,7 +440,7 @@ function importRefunds(event) {
 
 // ========== IMPORT: CONTRACTORS ==========
 function downloadContractorsTemplate() {
-  downloadCSV('Name,Type\nJohn Smith,closer\nJane Doe,setter\n', 'springs-contractors-template.csv');
+  downloadCSV('Name,Type\nJohn Smith,closer\nJane Doe,setter\nAlex Rivera,both\n', 'springs-contractors-template.csv');
 }
 function importContractors(event) {
   const file = event.target.files[0];
@@ -432,7 +454,7 @@ function importContractors(event) {
       const name = (col(row, 'Name', 'name') || '').trim();
       const type = (col(row, 'Type', 'type') || '').toLowerCase().trim();
       if (!name) { errors.push(`Row ${i + 2}: missing Name`); return; }
-      if (type !== 'closer' && type !== 'setter') { errors.push(`Row ${i + 2}: Type must be "closer" or "setter" (got "${type}")`); return; }
+      if (!['closer', 'setter', 'both'].includes(type)) { errors.push(`Row ${i + 2}: Type must be "closer", "setter", or "both" (got "${type}")`); return; }
       const duplicate = db.contractors.some(c => c.name.toLowerCase() === name.toLowerCase());
       if (duplicate) { errors.push(`Row ${i + 2}: "${name}" already exists, skipped`); return; }
       db.contractors.push({ id: genId(), name, type });
@@ -630,11 +652,72 @@ function renderSummary() {
     const totalBonuses = bonuses.totalWeeklyBonus + bonuses.monthlyBonus;
     const totalPay = comm.total + totalRefund + totalBonuses;
 
+    const typeBadges = c.type === 'both'
+      ? '<span class="badge closer">closer</span> <span class="badge setter">setter</span>'
+      : `<span class="badge ${c.type}">${c.type}</span>`;
+
+    const commissionHtml = (() => {
+      if (comm.type === 'both') return `
+        <div style="margin-bottom:8px;font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase">As Closer</div>
+        <div class="line-item"><span>Qualified Cash</span><span>${fmt(comm.closer.qualifiedCash)}</span></div>
+        <div class="line-item"><span>Base (10%)</span><span>${fmt(comm.closer.base)}</span></div>
+        <div class="line-item ${comm.closer.bumpEligible?'':'text-muted'}">
+          <span>2.5% Bump ${comm.closer.bumpEligible?`(Total: ${fmt(comm.closer.totalCash)})`:`(Need ${fmt(comm.closer.towardsThreshold)} more)`}</span>
+          <span>${comm.closer.bumpEligible?fmt(comm.closer.bump):'—'}</span>
+        </div>
+        <div class="line-item" style="margin-bottom:8px"><span>Closer Subtotal</span><span>${fmt(comm.closer.total)}</span></div>
+        <div style="margin-bottom:8px;font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;border-top:1px solid #e5e7eb;padding-top:8px">As Setter</div>
+        <div class="line-item"><span>Regular Sets (2.20%)</span><span>${fmt(comm.setter.regularComm)}</span></div>
+        <div class="line-item"><span>Weekend Sets (3%)</span><span>${fmt(comm.setter.weekendComm)}</span></div>
+        <div class="line-item total"><span>Total Commission</span><span>${fmt(comm.total)}</span></div>`;
+      if (comm.type === 'closer') return `
+        <div class="line-item"><span>Qualified Cash</span><span>${fmt(comm.qualifiedCash)}</span></div>
+        <div class="line-item"><span>Base (10%)</span><span>${fmt(comm.base)}</span></div>
+        <div class="line-item ${comm.bumpEligible?'':'text-muted'}">
+          <span>2.5% Bump ${comm.bumpEligible?`(Total: ${fmt(comm.totalCash)})`:`(Need ${fmt(comm.towardsThreshold)} more)`}</span>
+          <span>${comm.bumpEligible?fmt(comm.bump):'—'}</span>
+        </div>
+        <div class="line-item total"><span>Total Commission</span><span>${fmt(comm.total)}</span></div>`;
+      return `
+        <div class="line-item"><span>Regular Sets (2.20%)</span><span>${fmt(comm.regularComm)}</span></div>
+        <div class="line-item"><span>Weekend Sets (3%)</span><span>${fmt(comm.weekendComm)}</span></div>
+        <div class="line-item total"><span>Total Commission</span><span>${fmt(comm.total)}</span></div>`;
+    })();
+
+    const bonusesHtml = (() => {
+      const renderWeeks = (wb, label) => `
+        ${label ? `<div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;margin-bottom:4px">${label}</div>` : ''}
+        ${wb.weeklyBreakdown.map(w => `
+          <div class="line-item ${w.qualifies?'':'text-muted'}">
+            <span>Week ${w.week}: ${fmt(w.gross)}${w.refundAmt>0?` − ${fmt(w.refundAmt)}`:''} = ${fmt(w.net)} ${w.qualifies?'✓':''}</span>
+            <span>${w.bonus>0?fmt(w.bonus):'—'}</span>
+          </div>`).join('')}`;
+
+      if (bonuses.type === 'both') return `
+        ${renderWeeks(bonuses.closer, 'As Closer ($1,000/wk)')}
+        <div style="border-top:1px solid #e5e7eb;margin:8px 0"></div>
+        ${renderWeeks(bonuses.setter, 'As Setter ($500/wk)')}
+        ${bonuses.setter.monthlyBonus > 0 || bonuses.setter.totalCash !== undefined ? `
+          <div class="line-item ${bonuses.setter.monthlyBonus>0?'':'text-muted'}" style="margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb">
+            <span>Monthly Bonus — setter (${fmt(bonuses.setter.totalCash)} collected${bonuses.setter.monthlyBonus===0?`, need ${fmt(100000-bonuses.setter.totalCash)} more`:''})</span>
+            <span>${bonuses.setter.monthlyBonus>0?fmt(bonuses.setter.monthlyBonus):'—'}</span>
+          </div>` : ''}
+        <div class="line-item total"><span>Total Bonuses</span><span>${fmt(totalBonuses)}</span></div>`;
+      return `
+        ${renderWeeks(bonuses, '')}
+        ${(c.type==='setter'||c.type==='both') && bonuses.totalCash !== undefined ? `
+          <div class="line-item ${bonuses.monthlyBonus>0?'':'text-muted'}" style="margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb">
+            <span>Monthly Bonus (${fmt(bonuses.totalCash)} collected${bonuses.monthlyBonus===0?`, need ${fmt(100000-bonuses.totalCash)} more`:''})</span>
+            <span>${bonuses.monthlyBonus>0?fmt(bonuses.monthlyBonus):'—'}</span>
+          </div>` : ''}
+        <div class="line-item total"><span>Total Bonuses</span><span>${fmt(totalBonuses)}</span></div>`;
+    })();
+
     return `
       <div class="summary-card">
         <div class="card-header">
           <div style="display:flex;align-items:center;gap:8px">
-            <h3>${c.name}</h3><span class="badge ${c.type}">${c.type}</span>
+            <h3>${c.name}</h3>${typeBadges}
           </div>
           <div>
             <div style="font-size:11px;color:#6b7280;text-align:right">${MONTHS[month-1]} ${year}</div>
@@ -642,21 +725,7 @@ function renderSummary() {
           </div>
         </div>
         <div class="summary-grid">
-          <div class="summary-section">
-            <h4>Commission</h4>
-            ${c.type === 'closer' ? `
-              <div class="line-item"><span>Qualified Cash</span><span>${fmt(comm.qualifiedCash)}</span></div>
-              <div class="line-item"><span>Base (10%)</span><span>${fmt(comm.base)}</span></div>
-              <div class="line-item ${comm.bumpEligible?'':'text-muted'}">
-                <span>2.5% Bump ${comm.bumpEligible?`(Total: ${fmt(comm.totalCash)})`:`(Need ${fmt(comm.towardsThreshold)} more)`}</span>
-                <span>${comm.bumpEligible?fmt(comm.bump):'—'}</span>
-              </div>
-            ` : `
-              <div class="line-item"><span>Regular Sets (2.20%)</span><span>${fmt(comm.regularComm)}</span></div>
-              <div class="line-item"><span>Weekend Sets (3%)</span><span>${fmt(comm.weekendComm)}</span></div>
-            `}
-            <div class="line-item total"><span>Total Commission</span><span>${fmt(comm.total)}</span></div>
-          </div>
+          <div class="summary-section"><h4>Commission</h4>${commissionHtml}</div>
           <div class="summary-section">
             <h4>Refund Deductions</h4>
             ${refundEntries.length === 0
@@ -667,20 +736,7 @@ function renderSummary() {
                   </div>`).join('') + `
                 <div class="line-item total"><span>Net Refund Impact</span><span>${fmt(totalRefund)}</span></div>`}
           </div>
-          <div class="summary-section">
-            <h4>Weekly Bonuses (≥$40,000 net)</h4>
-            ${bonuses.weeklyBreakdown.map(w => `
-              <div class="line-item ${w.qualifies?'':'text-muted'}">
-                <span>Week ${w.week}: ${fmt(w.gross)}${w.refundAmt>0?` − ${fmt(w.refundAmt)} refunds`:''} = ${fmt(w.net)} ${w.qualifies?'✓':''}</span>
-                <span>${w.bonus>0?fmt(w.bonus):'—'}</span>
-              </div>`).join('')}
-            ${c.type==='setter'?`
-              <div class="line-item ${bonuses.monthlyBonus>0?'':'text-muted'}" style="margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb">
-                <span>Monthly Bonus (${fmt(bonuses.totalCash)} collected${bonuses.monthlyBonus===0?`, need ${fmt(100000-bonuses.totalCash)} more`:''})</span>
-                <span>${bonuses.monthlyBonus>0?fmt(bonuses.monthlyBonus):'—'}</span>
-              </div>`:''}
-            <div class="line-item total"><span>Total Bonuses</span><span>${fmt(totalBonuses)}</span></div>
-          </div>
+          <div class="summary-section"><h4>Weekly Bonuses (≥$40,000 net)</h4>${bonusesHtml}</div>
         </div>
         <div class="pay-breakdown">
           <div class="line-item"><span>Commission</span><span>${fmt(comm.total)}</span></div>
@@ -750,7 +806,7 @@ function showModal_addContractor() {
     <h3>Add Contractor</h3>
     <form id="form-add-contractor">
       <div class="form-group"><label>Full Name</label><input type="text" id="new-name" required placeholder="e.g. John Smith"></div>
-      <div class="form-group"><label>Type</label><select id="new-type"><option value="closer">Closer</option><option value="setter">Setter</option></select></div>
+      <div class="form-group"><label>Type</label><select id="new-type"><option value="closer">Closer</option><option value="setter">Setter</option><option value="both">Both</option></select></div>
       <div class="form-actions">
         <button type="button" class="btn-sm" onclick="closeModal()">Cancel</button>
         <button type="submit" class="btn-primary">Add Contractor</button>
