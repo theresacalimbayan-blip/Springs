@@ -134,11 +134,18 @@ function fmt(n) {
 }
 
 function isQualified(payment) {
+  if ('depositThresholdMet' in payment) return !!payment.depositThresholdMet;
   if (!payment.contractValue || payment.contractValue <= 0) return false;
   return (payment.depositAmount / payment.contractValue) >= 0.25;
 }
 
+function getCommissionableAmount(payment) {
+  if (payment.commissionableAmount !== undefined) return Math.max(0, payment.commissionableAmount);
+  return isQualified(payment) ? (payment.cashCollected || 0) : 0;
+}
+
 function getDepositPct(payment) {
+  if ('depositThresholdMet' in payment) return payment.depositThresholdMet ? 25 : 0;
   if (!payment.contractValue || payment.contractValue <= 0) return 0;
   return (payment.depositAmount / payment.contractValue) * 100;
 }
@@ -165,7 +172,7 @@ function calcCommission(contractor, month, year) {
 
   if (contractor.type === 'closer') {
     const qualifiedPayments = payments.filter(isQualified);
-    const qualifiedCash = qualifiedPayments.reduce((s, p) => s + (p.cashCollected || 0), 0);
+    const qualifiedCash = qualifiedPayments.reduce((s, p) => s + getCommissionableAmount(p), 0);
     const base = qualifiedCash * 0.10;
     const bumpEligible = totalCash >= 150000;
     const bump = bumpEligible ? totalCash * 0.025 : 0;
@@ -179,8 +186,8 @@ function calcCommission(contractor, month, year) {
   } else {
     const qualifiedRegular = payments.filter(p => isQualified(p) && !p.isWeekendSet);
     const qualifiedWeekend = payments.filter(p => isQualified(p) && p.isWeekendSet);
-    const regularCash = qualifiedRegular.reduce((s, p) => s + (p.cashCollected || 0), 0);
-    const weekendCash = qualifiedWeekend.reduce((s, p) => s + (p.cashCollected || 0), 0);
+    const regularCash = qualifiedRegular.reduce((s, p) => s + getCommissionableAmount(p), 0);
+    const weekendCash = qualifiedWeekend.reduce((s, p) => s + getCommissionableAmount(p), 0);
     const regularComm = regularCash * 0.022;
     const weekendComm = weekendCash * 0.03;
     return {
@@ -354,7 +361,20 @@ function renderEntry() {
     return;
   }
 
-  body.innerHTML = db.contractors.map(c => {
+  // Global import banner
+  const globalBanner = `
+    <div class="global-import-bar">
+      <span>Import your full spreadsheet (all setters at once):</span>
+      <div class="toolbar-actions">
+        <button class="btn-sm" onclick="downloadFullTemplate()">Download Template</button>
+        <label class="btn-sm btn-primary" style="cursor:pointer">
+          Import Full Spreadsheet
+          <input type="file" accept=".csv" style="display:none" onchange="importFullSpreadsheet(event)">
+        </label>
+      </div>
+    </div>`;
+
+  body.innerHTML = globalBanner + db.contractors.map(c => {
     const isSetter = c.type === 'setter';
     return `
     <div class="contractor-card">
@@ -597,42 +617,91 @@ function parseCSV(text) {
   return { headers, rows };
 }
 
-function downloadPaymentTemplate(isSetter) {
-  const headers = isSetter
-    ? 'Date,Contract Value,Deposit Amount,Cash Collected,Financing Fee,Weekend Set (Yes/No)'
-    : 'Date,Contract Value,Deposit Amount,Cash Collected,Financing Fee';
-  const example = isSetter
-    ? '2026-04-15,10000,3000,10000,500,No'
-    : '2026-04-15,10000,3000,10000,500';
-  downloadCSV(`${headers}\n${example}\n`, 'payments-template.csv');
+function downloadFullTemplate() {
+  const headers = 'Transaction Date,Processor,Offering,Master Email,Master Contract,Contract Sale Date,Amount Paid,Commissionable Amount,Refund Status Approximation,Setter,Deposit Threshold';
+  const ex1 = '4/10/2026,UGA NY,Hair,kemique@yahoo.com,kemique45870Stem Kemique Jacobs,8/1/2025,$124.75,$124.75,,Jonah Shilvock,Yes';
+  const ex2 = '4/13/2026,PatientFi,Hair,greg.levi@jll.com,greg.le45812Stem Greg Levi,6/4/2025,-$7500.00,-$7500.00,Pre Treatment,Jonah Shilvock,';
+  downloadCSV(`${headers}\n${ex1}\n${ex2}\n`, 'springs-payroll-template.csv');
 }
 
-function importPaymentsCSV(contractorId, isSetter, event) {
+function downloadPaymentTemplate(isSetter) {
+  downloadFullTemplate();
+}
+
+function importFullSpreadsheet(event) {
   const file = event.target.files[0];
   if (!file) return;
+  const month = parseInt(document.getElementById('entry-month').value);
+  const year = parseInt(document.getElementById('entry-year').value);
   const reader = new FileReader();
   reader.onload = e => {
     const { rows } = parseCSV(e.target.result);
-    if (!rows.length) { alert('No data found in CSV.'); return; }
-    let imported = 0; const errors = [];
+    if (!rows.length) { alert('No data found in the file.'); return; }
+    let imported = 0; let refunds = 0; const errors = [];
     rows.forEach((row, i) => {
-      const date = row['Date'] || row['date'] || '';
-      const contractValue = parseFloat(row['Contract Value'] || row['contract value'] || 0);
-      if (!date || contractValue <= 0) { errors.push(`Row ${i + 2}: missing date or contract value`); return; }
-      db.payments.push({
-        id: genId(), contractorId, date, contractValue,
-        depositAmount: parseFloat(row['Deposit Amount'] || row['deposit amount'] || 0),
-        cashCollected: parseFloat(row['Cash Collected'] || row['cash collected'] || 0),
-        financingFee: parseFloat(row['Financing Fee'] || row['financing fee'] || 0),
-        isWeekendSet: isSetter ? ['yes','true'].includes((row['Weekend Set (Yes/No)'] || row['Weekend Set'] || '').toLowerCase()) : false
-      });
-      imported++;
+      const rowNum = i + 2;
+      const dateRaw = row['Transaction Date'] || row['Date'] || '';
+      const setterName = (row['Setter'] || '').trim();
+      const amountRaw = (row['Amount Paid'] || '').replace(/[$,]/g, '');
+      const commRaw = (row['Commissionable Amount'] || '').replace(/[$,]/g, '');
+      const depositThreshold = (row['Deposit Threshold'] || '').toLowerCase().trim() === 'yes';
+      const refundStatus = (row['Refund Status Approximation'] || '').trim();
+      if (!dateRaw) { errors.push(`Row ${rowNum}: missing date`); return; }
+      if (!setterName) { errors.push(`Row ${rowNum}: missing Setter name`); return; }
+      const contractor = db.contractors.find(c =>
+        c.name.toLowerCase().trim() === setterName.toLowerCase() ||
+        c.name.toLowerCase().includes(setterName.toLowerCase()) ||
+        setterName.toLowerCase().includes(c.name.toLowerCase())
+      );
+      if (!contractor) { errors.push(`Row ${rowNum}: setter "${setterName}" not found — add them to Contractors first`); return; }
+      const amountPaid = parseFloat(amountRaw) || 0;
+      const commissionableAmount = parseFloat(commRaw) || 0;
+      const processor = row['Processor'] || '';
+      const offering = row['Offering'] || '';
+      const clientEmail = row['Master Email'] || '';
+      const masterContract = row['Master Contract'] || '';
+      const contractSaleDate = row['Contract Sale Date'] || '';
+      // Parse date — handle M/D/YYYY format
+      const dateObj = new Date(dateRaw);
+      const date = isNaN(dateObj) ? dateRaw : dateObj.toISOString().slice(0, 10);
+      if (amountPaid < 0) {
+        // Negative = refund entry
+        db.refunds.push({
+          id: genId(), contractorId: contractor.id,
+          description: masterContract || clientEmail || `Refund row ${rowNum}`,
+          saleAmount: Math.abs(amountPaid),
+          rate: contractor.type === 'closer' ? 10 : 2.20,
+          status: 'ticket',
+          refundStatusApproximation: refundStatus,
+          submittedDate: date, approvedDate: null, processedDate: null
+        });
+        refunds++;
+      } else {
+        db.payments.push({
+          id: genId(), contractorId: contractor.id, date,
+          contractValue: 0, depositAmount: 0,
+          cashCollected: amountPaid,
+          commissionableAmount: Math.abs(commissionableAmount),
+          depositThresholdMet: depositThreshold,
+          financingFee: 0,
+          isWeekendSet: false,
+          processor, offering, clientEmail, masterContract, contractSaleDate
+        });
+        imported++;
+      }
     });
     saveDB(); renderEntry();
-    alert(`Imported ${imported} payment(s).${errors.length ? '\n\nSkipped:\n' + errors.join('\n') : ''}`);
+    let msg = `Imported ${imported} payment(s) and ${refunds} refund(s).`;
+    if (errors.length) msg += `\n\nSkipped ${errors.length} row(s):\n` + errors.join('\n');
+    alert(msg);
     event.target.value = '';
   };
   reader.readAsText(file);
+}
+
+function importPaymentsCSV(contractorId, isSetter, event) {
+  // Delegate to full spreadsheet import
+  importFullSpreadsheet(event);
 }
 
 function downloadRefundTemplate() {
