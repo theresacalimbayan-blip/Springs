@@ -75,7 +75,7 @@
       <thead>
         <tr>
           <th style="width:36px"><input type="checkbox" id="select-all-contractors" onchange="toggleSelectAll(this.checked)"></th>
-          <th>Name</th><th>Type</th><th></th>
+          <th>Name</th><th>Type</th><th>Status</th><th></th>
         </tr>
       </thead>
       <tbody id="contractors-tbody"></tbody>
@@ -101,6 +101,11 @@
       <div class="month-picker">
         <select id="summary-month"></select>
         <select id="summary-year"></select>
+        <select id="summary-status-filter">
+          <option value="active">Active Only</option>
+          <option value="all">All</option>
+          <option value="inactive">Inactive Only</option>
+        </select>
         <button id="btn-calculate" class="btn-primary">Calculate</button>
       </div>
     </div>

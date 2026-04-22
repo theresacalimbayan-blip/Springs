@@ -77,6 +77,8 @@ function loadDB() {
     refunds: p.refunds || [],
     weekendContracts: p.weekendContracts || []
   };
+  // Migrate: default status to 'active' for any contractor missing it
+  db.contractors.forEach(c => { if (!c.status) c.status = 'active'; });
 }
 function saveDB() { localStorage.setItem('springs-payroll', JSON.stringify(db)); }
 function genId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
@@ -481,7 +483,7 @@ function deleteSelectedContractors() {
 
 // ========== IMPORT: CONTRACTORS ==========
 function downloadContractorsTemplate() {
-  downloadCSV('Name,Type\nJohn Smith,closer\nJane Doe,setter\nAlex Rivera,both\n', 'springs-contractors-template.csv');
+  downloadCSV('Name,Type,Status\nJohn Smith,closer,active\nJane Doe,setter,active\nAlex Rivera,both,inactive\n', 'springs-contractors-template.csv');
 }
 function importContractors(event) {
   const file = event.target.files[0];
@@ -494,11 +496,13 @@ function importContractors(event) {
     rows.forEach((row, i) => {
       const name = (col(row, 'Name', 'name') || '').trim();
       const type = (col(row, 'Type', 'type') || '').toLowerCase().trim();
+      const statusRaw = (col(row, 'Status', 'status') || 'active').toLowerCase().trim();
+      const status = statusRaw === 'inactive' ? 'inactive' : 'active';
       if (!name) { errors.push(`Row ${i + 2}: missing Name`); return; }
       if (!['closer', 'setter', 'both'].includes(type)) { errors.push(`Row ${i + 2}: Type must be "closer", "setter", or "both" (got "${type}")`); return; }
       const duplicate = db.contractors.some(c => c.name.toLowerCase() === name.toLowerCase());
       if (duplicate) { errors.push(`Row ${i + 2}: "${name}" already exists, skipped`); return; }
-      db.contractors.push({ id: genId(), name, type });
+      db.contractors.push({ id: genId(), name, type, status });
       added++;
     });
     saveDB(); renderContractors();
@@ -506,6 +510,13 @@ function importContractors(event) {
     event.target.value = '';
   };
   reader.readAsText(file);
+}
+
+function toggleContractorStatus(id) {
+  const c = db.contractors.find(c => c.id === id);
+  if (!c) return;
+  c.status = c.status === 'inactive' ? 'active' : 'inactive';
+  saveDB(); renderContractors();
 }
 
 // ========== RENDER CONTRACTORS ==========
@@ -520,7 +531,7 @@ function renderContractors() {
 
   const tbody = document.getElementById('contractors-tbody');
   if (!db.contractors.length) {
-    tbody.innerHTML = '<tr><td colspan="4" style="padding:20px;text-align:center;color:#9ca3af">No contractors yet. Click "+ Add Contractor" to get started.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" style="padding:20px;text-align:center;color:#9ca3af">No contractors yet. Click "+ Add Contractor" to get started.</td></tr>';
     return;
   }
 
@@ -531,14 +542,20 @@ function renderContractors() {
   });
 
   tbody.innerHTML = sorted.map(c => {
+    const status = c.status || 'active';
     const typeBadge = c.type === 'both'
       ? '<span class="badge closer" style="font-size:10px">closer</span> <span class="badge setter" style="font-size:10px">setter</span>'
       : `<span class="badge ${c.type}">${c.type}</span>`;
     return `
-      <tr>
+      <tr class="${status === 'inactive' ? 'row-inactive' : ''}">
         <td><input type="checkbox" class="contractor-cb" data-id="${c.id}" onchange="updateBulkDeleteBtn()"></td>
         <td>${c.name}</td>
         <td>${typeBadge}</td>
+        <td>
+          <button class="btn-status-toggle ${status}" onclick="toggleContractorStatus('${c.id}')" title="Click to toggle">
+            ${status === 'active' ? 'Active' : 'Inactive'}
+          </button>
+        </td>
         <td><button class="btn-sm btn-danger" onclick="deleteContractor('${c.id}')">Delete</button></td>
       </tr>`;
   }).join('');
@@ -699,10 +716,10 @@ function renderRefundsSection() {
 }
 
 // ========== RENDER SUMMARY ==========
-function renderSummaryDashboard(month, year) {
+function renderSummaryDashboard(contractors, month, year) {
   let totNetCash = 0, totComm = 0, totRefund = 0, totBonus = 0, totPay = 0;
 
-  const rows = db.contractors.map(c => {
+  const rows = contractors.map(c => {
     const comm = calcCommission(c, month, year);
     const refundEntries = getRefundDeductionsForMonth(c, month, year);
     const bonuses = calcBonuses(c, month, year);
@@ -738,7 +755,7 @@ function renderSummaryDashboard(month, year) {
     <div class="dashboard-card">
       <div class="card-header" style="padding:14px 20px">
         <h3>Overview — ${MONTHS[month-1]} ${year}</h3>
-        <span style="font-size:12px;color:#6b7280">${db.contractors.length} contractor(s)</span>
+        <span style="font-size:12px;color:#6b7280">${contractors.length} contractor(s)</span>
       </div>
       <table class="data-table dashboard-table">
         <thead>
@@ -766,12 +783,22 @@ function renderSummaryDashboard(month, year) {
 function renderSummary() {
   const month = parseInt(document.getElementById('summary-month').value);
   const year = parseInt(document.getElementById('summary-year').value);
+  const statusFilter = document.getElementById('summary-status-filter')?.value || 'active';
   const body = document.getElementById('summary-body');
 
   if (!db.contractors.length) { body.innerHTML = '<p class="empty-msg">No contractors found.</p>'; return; }
 
-  const dashboard = renderSummaryDashboard(month, year);
-  const cards = db.contractors.map(c => {
+  const contractors = statusFilter === 'all'
+    ? db.contractors
+    : db.contractors.filter(c => (c.status || 'active') === statusFilter);
+
+  if (!contractors.length) {
+    body.innerHTML = `<p class="empty-msg">No ${statusFilter} contractors found.</p>`;
+    return;
+  }
+
+  const dashboard = renderSummaryDashboard(contractors, month, year);
+  const cards = contractors.map(c => {
     const comm = calcCommission(c, month, year);
     const refundEntries = getRefundDeductionsForMonth(c, month, year);
     const bonuses = calcBonuses(c, month, year);
@@ -945,7 +972,7 @@ function showModal_addContractor() {
 }
 function addContractor(e) {
   e.preventDefault();
-  db.contractors.push({ id: genId(), name: document.getElementById('new-name').value.trim(), type: document.getElementById('new-type').value });
+  db.contractors.push({ id: genId(), name: document.getElementById('new-name').value.trim(), type: document.getElementById('new-type').value, status: 'active' });
   saveDB(); closeModal(); renderContractors();
 }
 function deleteContractor(id) {
