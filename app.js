@@ -618,7 +618,7 @@ function parseCSV(text) {
 }
 
 function downloadFullTemplate() {
-  const headers = 'Transaction Date,Processor,Offering,Master Email,Master Contract,Contract Sale Date,Amount Paid,Commissionable Amount,Refund Status Approximation,Setter,Deposit Threshold';
+  const headers = 'Transaction Date,Processor,Offering,Master Email,Master Contract,Contract Sale Date,Amount Paid,Commissionable Amount,Refund Status Approximation,Name,Deposit Threshold';
   const ex1 = '4/10/2026,UGA NY,Hair,kemique@yahoo.com,kemique45870Stem Kemique Jacobs,8/1/2025,$124.75,$124.75,,Jonah Shilvock,Yes';
   const ex2 = '4/13/2026,PatientFi,Hair,greg.levi@jll.com,greg.le45812Stem Greg Levi,6/4/2025,-$7500.00,-$7500.00,Pre Treatment,Jonah Shilvock,';
   downloadCSV(`${headers}\n${ex1}\n${ex2}\n`, 'springs-payroll-template.csv');
@@ -641,13 +641,13 @@ function importFullSpreadsheet(event) {
     rows.forEach((row, i) => {
       const rowNum = i + 2;
       const dateRaw = row['Transaction Date'] || row['Date'] || '';
-      const setterName = (row['Setter'] || '').trim();
+      const setterName = (row['Name'] || row['Setter'] || row['Closer'] || '').trim();
       const amountRaw = (row['Amount Paid'] || '').replace(/[$,]/g, '');
       const commRaw = (row['Commissionable Amount'] || '').replace(/[$,]/g, '');
       const depositThreshold = (row['Deposit Threshold'] || '').toLowerCase().trim() === 'yes';
       const refundStatus = (row['Refund Status Approximation'] || '').trim();
       if (!dateRaw) { errors.push(`Row ${rowNum}: missing date`); return; }
-      if (!setterName) { errors.push(`Row ${rowNum}: missing Setter name`); return; }
+      if (!setterName) { errors.push(`Row ${rowNum}: missing Name`); return; }
       const contractor = db.contractors.find(c =>
         c.name.toLowerCase().trim() === setterName.toLowerCase() ||
         c.name.toLowerCase().includes(setterName.toLowerCase()) ||
