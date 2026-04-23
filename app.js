@@ -284,16 +284,29 @@ function parseCSV(text) {
     cols.push(cur.trim());
     return cols;
   };
-  const headers = parseRow(lines[0]);
+  // Deduplicate headers: second "Refund Type" becomes "Refund Type_2", etc.
+  const rawHeaders = parseRow(lines[0]);
+  const seen = {};
+  const headers = rawHeaders.map(h => {
+    const k = h.trim();
+    if (!(k in seen)) { seen[k] = 1; return k; }
+    seen[k]++; return `${k}_${seen[k]}`;
+  });
   const rows = [];
   for (let i = 1; i < lines.length; i++) {
     if (!lines[i].trim()) continue;
     const cols = parseRow(lines[i]);
     const row = {};
-    headers.forEach((h, j) => row[h.trim()] = (cols[j] || '').trim());
+    headers.forEach((h, j) => row[h] = (cols[j] || '').trim());
     rows.push(row);
   }
   return { headers, rows };
+}
+function parseAmount(str) {
+  if (!str) return 0;
+  // Handle accounting parentheses (500.00) → negative → abs; strips $, commas, spaces
+  const cleaned = str.replace(/[$,\s]/g, '').replace(/^\(([^)]+)\)$/, '$1');
+  return Math.abs(parseFloat(cleaned) || 0);
 }
 function downloadCSV(content, filename) {
   const blob = new Blob([content], { type: 'text/csv' });
@@ -325,15 +338,15 @@ function importMainSpreadsheet(event) {
       const rowNum = i + 2;
       const dateRaw = col(row, 'Transaction Date', 'transaction date');
       const masterContract = col(row, 'Master Contract', 'master contract');
-      const amountRaw = col(row, 'Amount Paid', 'amount paid').replace(/[$,]/g, '');
-      const commRaw = col(row, 'Commissionable Amount', 'commissionable amount').replace(/[$,]/g, '');
+      const amountRaw = col(row, 'Amount Paid', 'amount paid');
+      const commRaw = col(row, 'Commissionable Amount', 'commissionable amount');
       const closerName = col(row, 'Closer', 'closer');
       const setterName = col(row, 'Setter', 'setter', 'Name', 'name');
       const depositThreshold = col(row, 'Deposit Threshold', 'deposit threshold');
       if (!dateRaw) { errors.push(`Row ${rowNum}: missing Transaction Date`); return; }
       const transactionDate = toISODate(dateRaw);
-      const amountPaid = parseFloat(amountRaw) || 0;
-      const commissionableAmount = parseFloat(commRaw) || Math.abs(amountPaid);
+      const amountPaid = parseAmount(amountRaw);
+      const commissionableAmount = parseAmount(commRaw) || amountPaid;
       const closer = findContractorByName(closerName);
       const setter = findContractorByName(setterName);
       if (closerName && !closer) errors.push(`Row ${rowNum}: closer "${closerName}" not found in Contractors`);
@@ -397,32 +410,51 @@ function importRefunds(event) {
   if (!file) return;
   const reader = new FileReader();
   reader.onload = e => {
-    const { rows } = parseCSV(e.target.result);
+    const { headers, rows } = parseCSV(e.target.result);
     if (!rows.length) { alert('No data found.'); return; }
     let imported = 0; const errors = [];
     rows.forEach((row, i) => {
       const rowNum = i + 2;
-      const masterContract = col(row, 'Master Contract', 'master contract');
-      const amountRaw = col(row, 'Amount', 'amount').replace(/[$,]/g, '');
-      const amount = Math.abs(parseFloat(amountRaw) || 0);
-      if (!masterContract || amount <= 0) { errors.push(`Row ${rowNum}: missing Master Contract or Amount`); return; }
+
+      // Master Contract — try many common column name variations
+      const masterContract = col(row,
+        'Master Contract', 'master contract',
+        'Master Contract ID', 'master contract id',
+        'Contract ID', 'contract id', 'Contract', 'contract');
+
+      // Amount — handle $, commas, parentheses (accounting negatives)
+      const amountRaw = col(row, 'Amount', 'amount', 'Refund Amount', 'refund amount', 'Amount Refunded');
+      const amount = parseAmount(amountRaw);
+
+      if (amount <= 0) {
+        errors.push(`Row ${rowNum}: skipped — Amount is zero or missing (column "${amountRaw ? 'Amount' : 'not found'}", value: "${amountRaw}")`);
+        return;
+      }
+      if (!masterContract) {
+        // Warn but still import — contract is used for weekend rate, not critical
+        errors.push(`Row ${rowNum}: imported without Master Contract (will use regular setter rate)`);
+      }
+
       const closerName = col(row, 'Closer', 'closer');
       const setterName = col(row, 'Setter', 'setter');
       const closer = findContractorByName(closerName);
       const setter = findContractorByName(setterName);
-      // Determine status: check second Refund Type column (category)
-      const headers = Object.keys(row);
-      const refundTypeKeys = headers.filter(h => h.toLowerCase().includes('refund type'));
-      const refundTypeSpecific = refundTypeKeys[0] ? row[refundTypeKeys[0]] : '';
-      const refundTypeCategory = refundTypeKeys[1] ? row[refundTypeKeys[1]] : '';
-      const approveDate = toISODate(col(row, 'Refund Approve', 'refund approve'));
-      const transactionDate = toISODate(col(row, 'Transaction Date', 'transaction date'));
+
+      // After CSV dedup, second "Refund Type" column is "Refund Type_2"
+      const refundTypeSpecific = col(row, 'Refund Type', 'refund type', 'Refund Type (specific)', 'Refund Type - Specific');
+      const refundTypeCategory = col(row, 'Refund Type_2', 'refund type_2', 'Refund Type Category', 'refund type category', 'Category', 'category');
+
+      const approveDate = toISODate(col(row, 'Refund Approve', 'refund approve', 'Approve Date', 'approve date', 'Date', 'date'));
+      const transactionDate = toISODate(col(row, 'Transaction Date', 'transaction date', 'Processed Date', 'processed date'));
+
       db.refunds.push({
         id: genId(),
-        approveDate, clientName: col(row, 'Client Name', 'client name'),
+        approveDate,
+        clientName: col(row, 'Client Name', 'client name', 'Client', 'client'),
         clientEmail: col(row, 'Email', 'email'),
-        masterContract, offering: col(row, 'Offer', 'offer', 'Offering'),
-        refundReason: col(row, 'Refund Reason', 'refund reason'),
+        masterContract,
+        offering: col(row, 'Offer', 'offer', 'Offering', 'offering'),
+        refundReason: col(row, 'Refund Reason', 'refund reason', 'Reason', 'reason'),
         processor: col(row, 'Processor', 'processor'),
         refundTypeSpecific, amount,
         notes: col(row, 'Notes', 'notes'),
@@ -434,7 +466,18 @@ function importRefunds(event) {
       imported++;
     });
     saveDB(); renderEntry();
-    alert(`Imported ${imported} refund(s).${errors.length ? '\n\nNotes:\n' + errors.join('\n') : ''}`);
+
+    let msg = `Imported ${imported} refund(s).`;
+    if (errors.length) {
+      const shown = errors.slice(0, 20);
+      msg += `\n\nNotes (${errors.length}):\n` + shown.join('\n');
+      if (errors.length > 20) msg += `\n…and ${errors.length - 20} more.`;
+    }
+    // If nothing imported, show the detected column names to help debug
+    if (imported === 0) {
+      msg += `\n\nColumn names detected in your file:\n${headers.join(', ')}`;
+    }
+    alert(msg);
     event.target.value = '';
   };
   reader.readAsText(file);
